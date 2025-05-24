@@ -87,6 +87,7 @@
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/size_f.h"
+#include <iostream>
 
 namespace blink {
 
@@ -362,11 +363,18 @@ void AttachScrollMarkers(LayoutObject& parent,
 
 }  // namespace
 
+int ipid_counter = 0;
+
 const LayoutResult* BlockNode::Layout(
     const ConstraintSpace& constraint_space,
     const BlockBreakToken* break_token,
     const EarlyBreak* early_break,
     const ColumnSpannerPath* column_spanner_path) const {
+  ipid_counter++;
+  int curr_ipid_counter = ipid_counter;
+  std::cout << "[ipid] [BlockNode::Layout][#" << curr_ipid_counter
+            << "]  S - T - A - R - T - L - A - Y - O - U - T" << std::endl;
+
   // The exclusion space internally is a pointer to a shared vector, and
   // equality of exclusion spaces is performed using pointer comparison on this
   // internal shared vector.
@@ -431,8 +439,20 @@ const LayoutResult* BlockNode::Layout(
     // added or removed scrollbars during overflow recalculation, which may have
     // marked us for layout. In that case the cached result is unusable, and we
     // need to re-lay out now.
-    if (!box_->NeedsLayout())
+    if (!box_->NeedsLayout()) {
+      std::cout
+          << "[ipid] [BlockNode::Layout][#" << curr_ipid_counter
+          << "] hit cache\n  node: \n"
+          << ToString().Utf8().c_str() << "\n  space:\n"
+          << constraint_space.ToString().Utf8().c_str()
+          << "\n  layout_result:\n"
+          << layout_result->GetPhysicalFragment().ToString().Utf8().c_str()
+          << "\n  intrinsic_block_size: "
+          << layout_result->IntrinsicBlockSize().ToString().Utf8().c_str()
+          << std::endl;
+
       return layout_result;
+    }
   }
 
   if (!fragment_geometry) {
@@ -627,6 +647,16 @@ const LayoutResult* BlockNode::Layout(
   // TODO(ikilpatrick): This should be fixed by moving the shape-outside data
   // to the LayoutResult, removing this "side" data-structure.
   UpdateShapeOutsideInfoIfNeeded(*layout_result, constraint_space);
+
+  std::cout << "[ipid] [BlockNode::Layout][#" << curr_ipid_counter
+            << "] succeed\n  [[node]]: \n"
+            << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+            << constraint_space.ToString().Utf8().c_str()
+            << "\n  [[layout_result]]:\n"
+            << layout_result->GetPhysicalFragment().ToString().Utf8().c_str()
+            << "\n  [[intrinsic_block_size]]: "
+            << layout_result->IntrinsicBlockSize().ToString().Utf8().c_str()
+            << std::endl;
 
   return layout_result;
 }
@@ -896,11 +926,16 @@ void BlockNode::StoreResultInLayoutBox(const LayoutResult* result,
     box_->ShrinkLayoutResults(fragment_idx + 1);
 }
 
-MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
-    WritingMode container_writing_mode,
-    const SizeType type,
-    const ConstraintSpace& constraint_space,
-    const MinMaxSizesFloatInput float_input) const {
+MinMaxSizesResult
+BlockNode::ComputeMinMaxSizes(WritingMode container_writing_mode,
+                              const SizeType type,
+                              const ConstraintSpace &constraint_space,
+                              const MinMaxSizesFloatInput float_input) const {
+  ipid_counter++;
+  int curr_ipid_counter = ipid_counter;
+  std::cout << "[ipid] [BlockNode::ComputeMinMaxSizes][#" << curr_ipid_counter
+            << "]  M - I - N - M - A - X - S - I - Z - E - S" << std::endl;
+
   // TODO(layoutng) Can UpdateMarkerTextIfNeeded call be moved
   // somewhere else? List items need up-to-date markers before layout.
   if (IsListItem())
@@ -932,6 +967,14 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     MinMaxSizes sizes;
     sizes.min_size = border_padding.InlineSum();
     sizes.max_size = sizes.min_size;
+
+    std::cout
+        << "[ipid] [BlockNode::ComputeMinMaxSizes][#" << curr_ipid_counter
+        << "] prevent GridNG and FlexNG caching wrong result, [[node]]: \n"
+        << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+        << constraint_space.ToString().Utf8().c_str()
+        << "\n  [[MinMaxSizes]]: " << sizes << std::endl;
+
     return MinMaxSizesResult(sizes, /* depends_on_block_constraints */ false);
   }
 
@@ -964,6 +1007,14 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
         Style().LogicalWidth().HasPercentOrStretch() ||
         Style().LogicalMinWidth().HasPercentOrStretch() ||
         Style().LogicalMaxWidth().HasPercentOrStretch();
+
+    std::cout << "[ipid] [BlockNode::ComputeMinMaxSizes][#" << curr_ipid_counter
+              << "] orthogonal, [[node]]: \n"
+              << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+              << constraint_space.ToString().Utf8().c_str()
+              << "\n  [[MinMaxSizes]]: " << sizes
+              << "\n  [[depends_on_block_constraints]]: "
+              << depends_on_block_constraints << std::endl;
     return MinMaxSizesResult(sizes, depends_on_block_constraints);
   }
 
@@ -982,7 +1033,16 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   if (IsReplaced()) {
     MinMaxSizes sizes;
     sizes = IntrinsicFragmentGeometry().border_box_size.inline_size;
-    return {sizes, DependsOnBlockConstraints()};
+
+    bool dpon = DependsOnBlockConstraints();
+
+    std::cout << "[ipid] [BlockNode::ComputeMinMaxSizes][#" << curr_ipid_counter
+              << "] replaced, [[node]]: \n"
+              << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+              << constraint_space.ToString().Utf8().c_str()
+              << "\n  [[MinMaxSizes]]: " << sizes
+              << "\n  [[depends_on_block_constraints]]: " << dpon << std::endl;
+    return {sizes, dpon};
   }
 
   const bool has_aspect_ratio = !Style().AspectRatio().IsAuto();
@@ -995,8 +1055,17 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
           border_padding, Style().LogicalAspectRatio(),
           Style().BoxSizingForAspectRatio(),
           fragment_geometry.border_box_size.block_size);
-      return MinMaxSizesResult({inline_size_from_ar, inline_size_from_ar},
-                               DependsOnBlockConstraints(),
+
+      bool dpon = DependsOnBlockConstraints();
+
+      std::cout << "[ipid] [BlockNode::ComputeMinMaxSizes][#"
+                << curr_ipid_counter << "] has aspect ratio, [[node]]: \n"
+                << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+                << constraint_space.ToString().Utf8().c_str()
+                << "\n  [[MinMaxSizes]]: " << inline_size_from_ar
+                << "\n  [[depends_on_block_constraints]]: " << dpon
+                << std::endl;
+      return MinMaxSizesResult({inline_size_from_ar, inline_size_from_ar}, dpon,
                                /* applied_aspect_ratio */ true);
     }
   }
@@ -1072,6 +1141,14 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
       (DependsOnBlockConstraints() ||
        UseParentPercentageResolutionBlockSizeForChildren()) &&
       (result->depends_on_block_constraints || has_aspect_ratio);
+
+  std::cout << "[ipid] [BlockNode::ComputeMinMaxSizes][#" << curr_ipid_counter
+            << "] final result, [[node]]: \n"
+            << ToString().Utf8().c_str() << "\n  [[space]]:\n"
+            << constraint_space.ToString().Utf8().c_str()
+            << "\n  [[MinMaxSizes]]: " << result->sizes
+            << "\n  [[depends_on_block_constraints]]: "
+            << result->depends_on_block_constraints << std::endl;
   return *result;
 }
 

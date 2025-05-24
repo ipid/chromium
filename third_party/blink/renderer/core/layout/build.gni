@@ -720,6 +720,7 @@ blink_core_tests_layout = [
   "custom/layout_worklet_test.cc",
   "exclusions/exclusion_space_test.cc",
   "flex/flex_layout_algorithm_test.cc",
+  "flex/ipid_test.cc",
   "forms/fieldset_layout_algorithm_test.cc",
   "forms/layout_fieldset_test.cc",
   "forms/layout_text_control_single_line_test.cc",

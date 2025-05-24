@@ -58,14 +58,41 @@ const ConstraintSpace& ConstraintSpace::CloneForBlockInInlineIfNeeded(
 }
 
 String ConstraintSpace::ToString() const {
-  return String::Format("Offset: %s,%s Size: %sx%s Clearance: %s",
+  // 将 AutoSizeBehavior 枚举值转换为字符串的辅助函数
+  auto AutoSizeBehaviorToString =
+      [](AutoSizeBehavior behavior) -> const char * {
+    switch (behavior) {
+    case AutoSizeBehavior::kFitContent:
+      return "fit-content";
+    case AutoSizeBehavior::kStretchImplicit:
+      return "stretch-implicit";
+    case AutoSizeBehavior::kStretchExplicit:
+      return "stretch-explicit";
+    default:
+      return "<Unknown>";
+    }
+  };
+
+  return String::Format("Offset: (%s,%s)\n"
+                        "Size: (%sx%s)\n"
+                        "Clearance: %s\n"
+                        "InlineAutoBehavior: %s\n"
+                        "IsFixedInlineSize: %s\n"
+                        "BlockAutoBehavior: %s\n"
+                        "IsFixedBlockSize: %s\n"
+                        "IsInitialBlockSizeIndefinite: %s",
                         BfcOffset().line_offset.ToString().Ascii().c_str(),
                         BfcOffset().block_offset.ToString().Ascii().c_str(),
                         AvailableSize().inline_size.ToString().Ascii().c_str(),
                         AvailableSize().block_size.ToString().Ascii().c_str(),
                         HasClearanceOffset()
                             ? ClearanceOffset().ToString().Ascii().c_str()
-                            : "none");
+                            : "none",
+                        AutoSizeBehaviorToString(InlineAutoBehavior()),
+                        IsFixedInlineSize() ? "true" : "false",
+                        AutoSizeBehaviorToString(BlockAutoBehavior()),
+                        IsFixedBlockSize() ? "true" : "false",
+                        IsInitialBlockSizeIndefinite() ? "true" : "false");
 }
 
 }  // namespace blink
