@@ -21,6 +21,11 @@
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cstdlib>
+
 namespace blink {
 namespace {
 
@@ -158,44 +163,33 @@ public:
 //   // std::cout << std::endl;
 // }
 
-TEST_F(IpidTest, Test3) {
-  SetBodyInnerHTML(R"HTML(
-    <style>
-      #a {
-        height: 107px;
-        width: min-content;
-        background: #aaaaaa;
-      }
+TEST_F(IpidTest, TestDynamicHTML) {
+  std::cout << "\n[ipid] --------------- READ TEST BODY ---------------" << std::endl;
 
-      #b {
-        display: flex;
-        height: 89%;
-        background: #bbbbbb;
-      }
+  std::ifstream test_body_file("./test-body.html");
+  std::stringstream buffer;
 
-      #c {
-        aspect-ratio: 5 / 7;
-        background: #cccccc;
-      }
-    </style>
+  if (test_body_file.is_open()) {
+    buffer << test_body_file.rdbuf();
+    test_body_file.close();
+  } else {
+    std::cerr << "[ipid] 无法打开文件: ./test-body.html" << std::endl;
+    std::abort();
+  }
 
-    <div id="a">
-      <div id="b">
-        <div id="c"></div>
-      </div>
-    </div>
-  )HTML");
+  std::string html_content = buffer.str();
+  SetBodyInnerHTML(html_content.c_str());
 
   ConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
       {WritingMode::kHorizontalTb, TextDirection::kLtr},
-      LogicalSize(LayoutUnit(499), LayoutUnit(503)));
+      LogicalSize(LayoutUnit(19997), LayoutUnit(20011)));
 
-  std::cout << "\n[ipid] before layout" << std::endl;
+  std::cout << "\n[ipid] --------------- ENSURE LAYOUT ---------------" << std::endl;
 
-  RunBlockLayoutAlgorithm(
-      BlockNode(To<LayoutBox>(GetLayoutObjectByElementId("a"))), space);
+  BlockNode document_node(GetDocument().GetLayoutView());
+  RunBlockLayoutAlgorithm(document_node, space);
 
-  std::cout << "\n[ipid] after layout" << std::endl;
+  std::cout << "\n[ipid] --------------- LAYOUT DONE ---------------" << std::endl;
 }
 
 } // namespace

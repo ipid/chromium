@@ -15,6 +15,8 @@
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 
+#include <iostream>
+
 namespace blink {
 
 namespace {
@@ -23,7 +25,7 @@ struct SameSizeAsConstraintSpace {
   LogicalSize available_size;
   union {
     BfcOffset bfc_offset;
-    void* rare_data;
+    void *rare_data;
   };
   ExclusionSpace exclusion_space;
   unsigned bitfields[1];
@@ -31,10 +33,10 @@ struct SameSizeAsConstraintSpace {
 
 ASSERT_SIZE(ConstraintSpace, SameSizeAsConstraintSpace);
 
-}  // namespace
+} // namespace
 
-const ConstraintSpace& ConstraintSpace::CloneForBlockInInlineIfNeeded(
-    std::optional<ConstraintSpace>& space) const {
+const ConstraintSpace &ConstraintSpace::CloneForBlockInInlineIfNeeded(
+    std::optional<ConstraintSpace> &space) const {
   if (ShouldTextBoxTrimEnd()) {
     // A block-in-inline always has following lines, though it could be empty.
     // `ShouldTextBoxTrimEnd()` shouldn't trim the end if it's not the last
@@ -63,24 +65,32 @@ String ConstraintSpace::ToString() const {
       [](AutoSizeBehavior behavior) -> const char * {
     switch (behavior) {
     case AutoSizeBehavior::kFitContent:
-      return "fit-content";
+      return "kFitContent";
     case AutoSizeBehavior::kStretchImplicit:
-      return "stretch-implicit";
+      return "kStretchImplicit";
     case AutoSizeBehavior::kStretchExplicit:
-      return "stretch-explicit";
+      return "kStretchExplicit";
     default:
       return "<Unknown>";
     }
   };
 
-  return String::Format("Offset: (%s,%s)\n"
-                        "Size: (%sx%s)\n"
-                        "Clearance: %s\n"
-                        "InlineAutoBehavior: %s\n"
-                        "IsFixedInlineSize: %s\n"
-                        "BlockAutoBehavior: %s\n"
-                        "IsFixedBlockSize: %s\n"
-                        "IsInitialBlockSizeIndefinite: %s",
+  std::stringstream ss_percentage_resolution_size;
+  ss_percentage_resolution_size << PercentageResolutionSize();
+
+  std::stringstream ss_replaced_percentage_resolution_size;
+  ss_replaced_percentage_resolution_size << ReplacedPercentageResolutionSize();
+
+  return String::Format("    Offset: (%s, %s)\n"
+                        "    Size: (%sx%s)\n"
+                        "    Clearance: %s\n"
+                        "    InlineAutoBehavior: %s\n"
+                        "    IsFixedInlineSize: %s\n"
+                        "    BlockAutoBehavior: %s\n"
+                        "    IsFixedBlockSize: %s\n"
+                        "    IsInitialBlockSizeIndefinite: %s\n"
+                        "    PercentageResolutionSize: %s\n"
+                        "    ReplacedPercentageResolutionSize: %s\n",
                         BfcOffset().line_offset.ToString().Ascii().c_str(),
                         BfcOffset().block_offset.ToString().Ascii().c_str(),
                         AvailableSize().inline_size.ToString().Ascii().c_str(),
@@ -92,7 +102,9 @@ String ConstraintSpace::ToString() const {
                         IsFixedInlineSize() ? "true" : "false",
                         AutoSizeBehaviorToString(BlockAutoBehavior()),
                         IsFixedBlockSize() ? "true" : "false",
-                        IsInitialBlockSizeIndefinite() ? "true" : "false");
+                        IsInitialBlockSizeIndefinite() ? "true" : "false",
+                        ss_percentage_resolution_size.str().c_str(),
+                        ss_replaced_percentage_resolution_size.str().c_str());
 }
 
-}  // namespace blink
+} // namespace blink
