@@ -164,6 +164,9 @@ public:
 // }
 
 TEST_F(IpidTest, TestDynamicHTML) {
+  std::cout << "\n[ipid] InNoQuirksMode: " << GetDocument().InNoQuirksMode() << std::endl;
+  LoadAhem();
+
   std::cout << "\n[ipid] --------------- READ TEST BODY ---------------" << std::endl;
 
   std::ifstream test_body_file("./test-body.html");
