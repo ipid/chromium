@@ -659,6 +659,10 @@ blink_core_sources_layout = [
   "tree_traversal_utils.cc",
   "tree_traversal_utils.h",
   "unpositioned_float.h",
+  # ------ ipid logging START ------
+  "ipid_logging/ipid_depth_logging.cc",
+  "ipid_debug_str_utils.cc",
+  # ------ ipid logging END ------
 ]
 
 if (is_mac) {
@@ -823,4 +827,7 @@ blink_core_tests_layout = [
   "table/table_layout_utils_test.cc",
   "text_autosizer_test.cc",
   "visual_rect_mapping_test.cc",
+  # ------ ipid logging START ------
+  "ipid_test.cc",
+  # ------ ipid logging END ------
 ]

@@ -22,6 +22,11 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include <sstream>
+// ------ ipid logging END ------
+
 namespace blink {
 
 class ComputedStyle;
@@ -117,10 +122,23 @@ inline LayoutUnit ResolveMinInlineLength(
     const Length* auto_length = nullptr,
     LayoutUnit override_available_size = kIndefiniteSize,
     FitContentMode fit_content_mode = FitContentMode::kNormal) {
+
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMinInlineLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveMinInlineLength");
+
   const LayoutUnit result = ResolveInlineLengthInternal(
       constraint_space, style, border_padding, min_max_sizes_func, length,
       auto_length, LengthTypeInternal::kMin, fit_content_mode,
       override_available_size, CalcSizeKeywordBehavior::kAsSpecified);
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.AddField("border_padding.InlineSum()", border_padding.InlineSum().ToString());
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return border_padding.InlineSum()");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? border_padding.InlineSum() : result;
 }
 
@@ -133,10 +151,22 @@ inline LayoutUnit ResolveMaxInlineLength(
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize,
     FitContentMode fit_content_mode = FitContentMode::kNormal) {
+
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMaxInlineLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveMaxInlineLength");
+
   const LayoutUnit result = ResolveInlineLengthInternal(
       constraint_space, style, border_padding, min_max_sizes_func, length,
       /* auto_length */ nullptr, LengthTypeInternal::kMax, fit_content_mode,
       override_available_size, CalcSizeKeywordBehavior::kAsSpecified);
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return LayoutUnit::Max() = 2147483647");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 
@@ -164,12 +194,24 @@ inline LayoutUnit ResolveInitialMinBlockLength(
     const BoxStrut& border_padding,
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveInitialMinBlockLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveInitialMinBlockLength");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMin,
       override_available_size,
       /* override_percentage_resolution_size */ nullptr,
       [](SizeType) { return kIndefiniteSize; });
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.AddField("border_padding.BlockSum()", border_padding.BlockSum().ToString());
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return border_padding.BlockSum()");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? border_padding.BlockSum() : result;
 }
 inline LayoutUnit ResolveMinBlockLength(
@@ -181,10 +223,22 @@ inline LayoutUnit ResolveMinBlockLength(
     const Length* auto_length = nullptr,
     LayoutUnit override_available_size = kIndefiniteSize,
     const LayoutUnit* override_percentage_resolution_size = nullptr) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMinBlockLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveMinBlockLength");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length, auto_length,
       LengthTypeInternal::kMin, override_available_size,
       override_percentage_resolution_size, block_size_func);
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.AddField("border_padding.BlockSum()", border_padding.BlockSum().ToString());
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return border_padding.BlockSum()");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? border_padding.BlockSum() : result;
 }
 
@@ -195,12 +249,23 @@ inline LayoutUnit ResolveInitialMaxBlockLength(
     const BoxStrut& border_padding,
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveInitialMaxBlockLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveInitialMaxBlockLength");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMax,
       override_available_size,
       /* override_percentage_resolution_size */ nullptr,
       [](SizeType) { return kIndefiniteSize; });
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return LayoutUnit::Max() = 2147483647");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 inline LayoutUnit ResolveMaxBlockLength(
@@ -211,11 +276,22 @@ inline LayoutUnit ResolveMaxBlockLength(
     BlockSizeFunctionRef block_size_func,
     LayoutUnit override_available_size = kIndefiniteSize,
     const LayoutUnit* override_percentage_resolution_size = nullptr) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMaxBlockLength");
+  ipid_depth_log.PrintContext("BEGIN ResolveMaxBlockLength");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMax,
       override_available_size, override_percentage_resolution_size,
       block_size_func);
+
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.PrintContext("result is kIndefiniteSize, return LayoutUnit::Max() = 2147483647");
+  } else {
+    ipid_depth_log.AddField("result", result.ToString());
+    ipid_depth_log.PrintContext("result is definite, return result");
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 
@@ -232,7 +308,13 @@ inline LayoutUnit ResolveMainBlockLength(
       constraint_space, style, border_padding, length, auto_length,
       LengthTypeInternal::kMain, override_available_size,
       /* override_percentage_resolution_size */ nullptr,
-      [intrinsic_size](SizeType) { return intrinsic_size; });
+      [intrinsic_size](SizeType) {
+        IpidDepthLog ipid_depth_log("length_utils.h: ResolveMainBlockLength - block_size_function");
+
+        ipid_depth_log.AddField("intrinsic_size", intrinsic_size.ToString());
+        ipid_depth_log.PrintContext("simply return existing intrinsic_size");
+        return intrinsic_size;
+      });
 }
 
 inline LayoutUnit ResolveMainBlockLength(

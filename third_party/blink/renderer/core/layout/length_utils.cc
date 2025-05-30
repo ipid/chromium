@@ -23,6 +23,12 @@
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
+#include <sstream>
+// ------ ipid logging END ------
+
 namespace blink {
 
 LayoutUnit ResolveInlineLengthInternal(
@@ -36,11 +42,35 @@ LayoutUnit ResolveInlineLengthInternal(
     FitContentMode fit_content_mode,
     LayoutUnit override_available_size,
     CalcSizeKeywordBehavior calc_size_keyword_behavior) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ResolveInlineLengthInternal");
+
   DCHECK_EQ(constraint_space.GetWritingMode(), style.GetWritingMode());
 
   // For min-inline-size, this might still be 'auto'.
   const Length& length =
       original_length.IsAuto() && auto_length ? *auto_length : original_length;
+
+  ipid_depth_log.AddField("space",
+                          ipid::GetConstraintSpaceString(constraint_space));
+  if (length != original_length) {
+    ipid_depth_log.AddField("original_length", original_length.ToString());
+  }
+  ipid_depth_log.AddField("auto_length",
+                          auto_length ? auto_length->ToString() : "<nullptr>");
+  ipid_depth_log.AddField("!! used length !!", length.ToString());
+  ipid_depth_log.AddField("length_type_internal",
+                          ipid::GetLengthTypeInternalString(length_type));
+  ipid_depth_log.AddField("fit_content_mode",
+                          ipid::GetFitContentModeString(fit_content_mode));
+  ipid_depth_log.AddField("border_padding", border_padding.ToString());
+  ipid_depth_log.AddField("override_available_size",
+                          override_available_size.ToString());
+  ipid_depth_log.AddField(
+      "calc_size_keyword_behavior",
+      ipid::GetCalcSizeKeywordBehaviorString(calc_size_keyword_behavior));
+
+  ipid_depth_log.PrintContext("BEGIN ResolveInlineLengthInternal");
+
   switch (length.GetType()) {
     case Length::kFillAvailable:
     case Length::kStretch: {
@@ -49,6 +79,7 @@ LayoutUnit ResolveInlineLengthInternal(
               ? constraint_space.AvailableSize().inline_size
               : override_available_size;
       if (available_size == kIndefiniteSize) {
+        ipid_depth_log.PrintContext("try stretch but available_size is Indefinite, RETURN kIndefiniteSize");
         return kIndefiniteSize;
       }
       DCHECK_GE(available_size, LayoutUnit());
@@ -63,8 +94,12 @@ LayoutUnit ResolveInlineLengthInternal(
         margins_to_subtract +=
             ignore_margin_sides.inline_end ? LayoutUnit() : margins.inline_end;
       }
-      return std::max(border_padding.InlineSum(),
-                      available_size - margins_to_subtract);
+      LayoutUnit ret = std::max(border_padding.InlineSum(),
+                                available_size - margins_to_subtract);
+      ipid_depth_log.AddField("used available_size", available_size.ToString());
+      ipid_depth_log.AddField("return", ret.ToString());
+      ipid_depth_log.PrintContext("stretch to Definite available_size, RETURN valid value");
+      return ret;
     }
     case Length::kPercent:
     case Length::kFixed:
@@ -75,10 +110,13 @@ LayoutUnit ResolveInlineLengthInternal(
           percentage_resolution_size == kIndefiniteSize) {
         if (RuntimeEnabledFeatures::LayoutMinSizeIndefiniteEnabled()) {
           if (length_type != LengthTypeInternal::kMin) {
+            ipid_depth_log.PrintContext("[NEW]: length HasPercent, length_type not kMin, but percentage_resolution_size is Indefinite, RETURN kIndefiniteSize");
             return kIndefiniteSize;
           }
+          ipid_depth_log.PrintContext("[NEW]: length HasPercent and length_type is kMin, set percentage_resolution_size to 0");
           percentage_resolution_size = LayoutUnit();
         } else {
+          ipid_depth_log.PrintContext("[OLD]: length HasPercent but percentage_resolution_size is indefinite, return kIndefiniteSize");
           return kIndefiniteSize;
         }
       }
@@ -87,6 +125,11 @@ LayoutUnit ResolveInlineLengthInternal(
           length, percentage_resolution_size,
           {.intrinsic_evaluator =
                [&](const Length& length_to_evaluate) {
+                 IpidDepthLog ipid_depth_log("length_utils.cc: ResolveInlineLengthInternal - intrinsic_evaluator");
+
+                 ipid_depth_log.AddField("length_to_evaluate", length_to_evaluate.ToString());
+                 ipid_depth_log.PrintContext("recursively call ResolveInlineLengthInternal to resolve intrinsic inline length");
+
                  LayoutUnit result = ResolveInlineLengthInternal(
                      constraint_space, style, border_padding,
                      min_max_sizes_func, length_to_evaluate, auto_length,
@@ -105,6 +148,7 @@ LayoutUnit ResolveInlineLengthInternal(
            .calc_size_keyword_behavior = calc_size_keyword_behavior});
 
       if (evaluated_indefinite) {
+        ipid_depth_log.PrintContext("recursive resolveInline in MinimumValueForLength got indefinite, RETURN kIndefiniteSize");
         return kIndefiniteSize;
       }
 
@@ -112,15 +156,30 @@ LayoutUnit ResolveInlineLengthInternal(
         value = std::max(border_padding.InlineSum(), value);
       else
         value += border_padding.InlineSum();
+
+      ipid_depth_log.AddField("return", value.ToString());
+      ipid_depth_log.PrintContext("RETURN a Definite value");
       return value;
     }
     case Length::kContent:
-    case Length::kMaxContent:
-      return min_max_sizes_func(SizeType::kContent).sizes.max_size;
-    case Length::kMinContent:
-      return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-    case Length::kMinIntrinsic:
-      return min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size;
+    case Length::kMaxContent: {
+      LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.max_size;
+      ipid_depth_log.AddField("return", ret.ToString());
+      ipid_depth_log.PrintContext("return min_max_sizes_func(SizeType::kContent).sizes.max_size");
+      return ret;
+    }
+    case Length::kMinContent: {
+      LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.min_size;
+      ipid_depth_log.AddField("return", ret.ToString());
+      ipid_depth_log.PrintContext("return min_max_sizes_func(SizeType::kContent).sizes.min_size");
+      return ret;
+    }
+    case Length::kMinIntrinsic: {
+      LayoutUnit ret = min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size;
+      ipid_depth_log.AddField("return", ret.ToString());
+      ipid_depth_log.PrintContext("return min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size");
+      return ret;
+    }
     case Length::kFitContent: {
       const LayoutUnit available_size =
           override_available_size == kIndefiniteSize
@@ -132,28 +191,62 @@ LayoutUnit ResolveInlineLengthInternal(
         switch (fit_content_mode) {
           case FitContentMode::kNormal:
             switch (length_type) {
-              case LengthTypeInternal::kMin:
-                return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-              case LengthTypeInternal::kMain:
+              case LengthTypeInternal::kMin: {
+                LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.min_size;
+                ipid_depth_log.AddField("return", ret.ToString());
+                ipid_depth_log.PrintContext("[FitContentMode::kNormal][LengthTypeInternal::kMin]: available_size is Indefinite, RETURN min_max_sizes_func(SizeType::kContent).sizes.min_size");
+                return ret;
+              }
+              case LengthTypeInternal::kMain: {
+                ipid_depth_log.PrintContext("[FitContentMode::kNormal][LengthTypeInternal::kMain]: available_size is Indefinite, RETURN kIndefiniteSize");
                 return kIndefiniteSize;
-              case LengthTypeInternal::kMax:
-                return min_max_sizes_func(SizeType::kContent).sizes.max_size;
+              }
+              case LengthTypeInternal::kMax: {
+                LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.max_size;
+                ipid_depth_log.AddField("return", ret.ToString());
+                ipid_depth_log.PrintContext("[FitContentMode::kNormal][LengthTypeInternal::kMax]: available_size is Indefinite, RETURN min_max_sizes_func(SizeType::kContent).sizes.max_size");
+                return ret;
+              }
             }
-          case FitContentMode::kMinContribution:
-            return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-          case FitContentMode::kMaxContribution:
-            return min_max_sizes_func(SizeType::kContent).sizes.max_size;
+          case FitContentMode::kMinContribution: {
+            LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.min_size;
+            ipid_depth_log.AddField("return", ret.ToString());
+            ipid_depth_log.PrintContext("[FitContentMode::kMinContribution]: available_size is Indefinite, RETURN min_max_sizes_func(SizeType::kContent).sizes.min_size");
+            return ret;
+          }
+          case FitContentMode::kMaxContribution: {
+            LayoutUnit ret = min_max_sizes_func(SizeType::kContent).sizes.max_size;
+            ipid_depth_log.AddField("return", ret.ToString());
+            ipid_depth_log.PrintContext("[FitContentMode::kMaxContribution]: available_size is Indefinite, RETURN min_max_sizes_func(SizeType::kContent).sizes.max_size");
+            return ret;
+          }
         }
       }
       DCHECK_GE(available_size, LayoutUnit());
 
       const BoxStrut margins = ComputeMarginsForSelf(constraint_space, style);
-      return min_max_sizes_func(SizeType::kContent)
-          .sizes.ShrinkToFit(
-              (available_size - margins.InlineSum()).ClampNegativeToZero());
+
+      MinMaxSizes min_max_func_returned =
+          min_max_sizes_func(SizeType::kContent).sizes;
+      LayoutUnit actual_available_size =
+          (available_size - margins.InlineSum()).ClampNegativeToZero();
+      LayoutUnit ret = min_max_func_returned.ShrinkToFit(actual_available_size);
+
+      ipid_depth_log.AddField(
+          "min_max_func_returned",
+          ipid::GetMinMaxSizesString(min_max_func_returned));
+      ipid_depth_log.AddField("actual_available_size",
+                              actual_available_size.ToString());
+      ipid_depth_log.AddField("final result", ret.ToString());
+      ipid_depth_log.PrintContext(
+          "Definite available_size, RETURN "
+          "min_max_sizes_func(SizeType::kContent).sizes.ShrinkToFit(actual_"
+          "available_size)");
+      return ret;
     }
     case Length::kAuto:
     case Length::kNone:
+      ipid_depth_log.PrintContext("return kIndefiniteSize (kAuto/kNone)");
       return kIndefiniteSize;
     case Length::kFlex:
       NOTREACHED() << "Should only be used for grid.";
@@ -174,11 +267,28 @@ LayoutUnit ResolveBlockLengthInternal(
     LayoutUnit override_available_size,
     const LayoutUnit* override_percentage_resolution_size,
     BlockSizeFunctionRef block_size_func) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ResolveBlockLengthInternal");
+
   DCHECK_EQ(constraint_space.GetWritingMode(), style.GetWritingMode());
 
   // For min-block-size, this might still be 'auto'.
   const Length& length =
       original_length.IsAuto() && auto_length ? *auto_length : original_length;
+
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(constraint_space));
+  if (length != original_length) {
+    ipid_depth_log.AddField("original_length", original_length.ToString());
+  }
+  ipid_depth_log.AddField("auto_length", auto_length ? auto_length->ToString() : "<nullptr>");
+  ipid_depth_log.AddField("!! used length !!", length.ToString());
+  ipid_depth_log.AddField("length_type_internal", ipid::GetLengthTypeInternalString(length_type));
+  ipid_depth_log.AddField("border_padding", border_padding.ToString());
+  ipid_depth_log.AddField("override_available_size", override_available_size.ToString());
+  ipid_depth_log.AddField("override_percentage_resolution_size",
+                          override_percentage_resolution_size ? override_percentage_resolution_size->ToString() : "<nullptr>");
+
+  ipid_depth_log.PrintContext("BEGIN ResolveBlockLengthInternal");
+
   switch (length.GetType()) {
     case Length::kFillAvailable:
     case Length::kStretch: {
@@ -187,9 +297,15 @@ LayoutUnit ResolveBlockLengthInternal(
               ? constraint_space.AvailableSize().block_size
               : override_available_size;
       if (available_size == kIndefiniteSize) {
-        return length_type == LengthTypeInternal::kMain
-                   ? block_size_func(SizeType::kContent)
-                   : kIndefiniteSize;
+        if (length_type == LengthTypeInternal::kMain) {
+          LayoutUnit ret = block_size_func(SizeType::kContent);
+          ipid_depth_log.AddField("return", ret.ToString());
+          ipid_depth_log.PrintContext("available_size is Indefinite, length_type is kMain, RETURN block_size_func(SizeType::kContent)");
+          return ret;
+        } else {
+          ipid_depth_log.PrintContext("available_size is Indefinite, length_type is not kMain, RETURN kIndefiniteSize");
+          return kIndefiniteSize;
+        }
       }
       DCHECK_GE(available_size, LayoutUnit());
       const BoxStrut margins = ComputeMarginsForSelf(constraint_space, style);
@@ -203,8 +319,12 @@ LayoutUnit ResolveBlockLengthInternal(
         margins_to_subtract +=
             ignore_margin_sides.block_end ? LayoutUnit() : margins.block_end;
       }
-      return std::max(border_padding.BlockSum(),
-                      available_size - margins_to_subtract);
+      LayoutUnit ret = std::max(border_padding.BlockSum(),
+                                available_size - margins_to_subtract);
+      ipid_depth_log.AddField("available_size", available_size.ToString());
+      ipid_depth_log.AddField("return", ret.ToString());
+      ipid_depth_log.PrintContext("stretch to Definite available_size, RETURN valid value");
+      return ret;
     }
     case Length::kPercent:
     case Length::kFixed:
@@ -218,22 +338,40 @@ LayoutUnit ResolveBlockLengthInternal(
         switch (length_type) {
           case LengthTypeInternal::kMin: {
             if (RuntimeEnabledFeatures::LayoutMinSizeIndefiniteEnabled()) {
+              ipid_depth_log.PrintContext("[NEW]: length HasPercent and length_type is kMin, set percentage_resolution_size to 0 and CONTINUE");
               percentage_resolution_size = LayoutUnit();
             } else {
+              ipid_depth_log.PrintContext("[OLD]: length HasPercent but percentage_resolution_size is indefinite, RETURN kIndefiniteSize");
               return kIndefiniteSize;
             }
             break;
           }
-          case LengthTypeInternal::kMain:
-            return block_size_func(SizeType::kContent);
-          case LengthTypeInternal::kMax:
+          case LengthTypeInternal::kMain: {
+            LayoutUnit ret = block_size_func(SizeType::kContent);
+            ipid_depth_log.AddField("return", ret.ToString());
+            ipid_depth_log.PrintContext("length HasPercent, length_type is kMain, percentage_resolution_size is Indefinite, RETURN block_size_func(SizeType::kContent)");
+            return ret;
+          }
+          case LengthTypeInternal::kMax: {
+            ipid_depth_log.PrintContext("length HasPercent, length_type is kMax, percentage_resolution_size is Indefinite, RETURN kIndefiniteSize");
             return kIndefiniteSize;
+          }
         }
       }
       bool evaluated_indefinite = false;
       LayoutUnit value = MinimumValueForLength(
           length, percentage_resolution_size,
           {.intrinsic_evaluator = [&](const Length& length_to_evaluate) {
+            IpidDepthLog ipid_depth_log(
+                "length_utils.cc: ResolveBlockLengthInternal - "
+                "intrinsic_evaluator");
+
+            ipid_depth_log.AddField("length_to_evaluate",
+                                    length_to_evaluate.ToString());
+            ipid_depth_log.PrintContext(
+                "recursively call ResolveBlockLengthInternal to resolve "
+                "intrinsic block length");
+
             LayoutUnit result = ResolveBlockLengthInternal(
                 constraint_space, style, border_padding, length_to_evaluate,
                 auto_length, length_type, override_available_size,
@@ -250,6 +388,7 @@ LayoutUnit ResolveBlockLengthInternal(
           }});
 
       if (evaluated_indefinite) {
+        ipid_depth_log.PrintContext("recursive resolveBlock in MinimumValueForLength got indefinite, RETURN kIndefiniteSize");
         return kIndefiniteSize;
       }
 
@@ -257,6 +396,9 @@ LayoutUnit ResolveBlockLengthInternal(
         value = std::max(border_padding.BlockSum(), value);
       else
         value += border_padding.BlockSum();
+
+      ipid_depth_log.AddField("return", value.ToString());
+      ipid_depth_log.PrintContext("RETURN a Definite value");
       return value;
     }
     case Length::kContent:
@@ -275,10 +417,17 @@ LayoutUnit ResolveBlockLengthInternal(
           !constraint_space.HasBlockFragmentation())
         DCHECK_GE(intrinsic_size, border_padding.BlockSum());
 #endif  // DCHECK_IS_ON()
+      ipid_depth_log.AddField("return", intrinsic_size.ToString());
+      if (length.IsMinIntrinsic()) {
+        ipid_depth_log.PrintContext("The fit-content length is min-intrinsic, RETURN block_size_func(SizeType::kIntrinsic)");
+      } else {
+        ipid_depth_log.PrintContext("The fit-content length is not min-intrinsic, RETURN block_size_func(SizeType::kContent)");
+      }
       return intrinsic_size;
     }
     case Length::kAuto:
     case Length::kNone:
+      ipid_depth_log.PrintContext("return kIndefiniteSize (for kAuto/kNone)");
       return kIndefiniteSize;
     case Length::kFlex:
       NOTREACHED() << "Should only be used for grid.";
@@ -293,11 +442,19 @@ LayoutUnit InlineSizeFromAspectRatio(const BoxStrut& border_padding,
                                      const LogicalSize& aspect_ratio,
                                      EBoxSizing box_sizing,
                                      LayoutUnit block_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: InlineSizeFromAspectRatio");
+  ipid_depth_log.AddField("border_padding", border_padding.ToString());
+  ipid_depth_log.AddField("aspect_ratio",
+                          ipid::GetAspectRatioString(aspect_ratio));
+  ipid_depth_log.AddField("block_size", block_size.ToString());
+
   if (box_sizing == EBoxSizing::kBorderBox) {
+    ipid_depth_log.PrintContext("[box-sizing: border-box] result = (border-inline + padding-inline) * aspect-ratio-inline / aspect-ratio-block");
     return std::max(
         border_padding.InlineSum(),
         block_size.MulDiv(aspect_ratio.inline_size, aspect_ratio.block_size));
   }
+  ipid_depth_log.PrintContext("[box-sizing: content-box] result = (block_size - border-block - padding-block) * aspect-ratio-inline / aspect-ratio-block + border-inline + padding-inline");
   block_size -= border_padding.BlockSum();
   return block_size.MulDiv(aspect_ratio.inline_size, aspect_ratio.block_size) +
          border_padding.InlineSum();
@@ -307,12 +464,20 @@ LayoutUnit BlockSizeFromAspectRatio(const BoxStrut& border_padding,
                                     const LogicalSize& aspect_ratio,
                                     EBoxSizing box_sizing,
                                     LayoutUnit inline_size) {
+  // 用于调试的深度日志
+  IpidDepthLog ipid_depth_log("length_utils.cc: BlockSizeFromAspectRatio");
+  ipid_depth_log.AddField("border_padding", border_padding.ToString());
+  ipid_depth_log.AddField("aspect_ratio", ipid::GetAspectRatioString(aspect_ratio));
+  ipid_depth_log.AddField("inline_size", inline_size.ToString());
+
   DCHECK_GE(inline_size, border_padding.InlineSum());
   if (box_sizing == EBoxSizing::kBorderBox) {
+    ipid_depth_log.PrintContext("[box-sizing: border-box] result = max(border-block + padding-block, inline_size * aspect-ratio-block / aspect-ratio-inline)");
     return std::max(
         border_padding.BlockSum(),
         inline_size.MulDiv(aspect_ratio.block_size, aspect_ratio.inline_size));
   }
+  ipid_depth_log.PrintContext("[box-sizing: content-box] result = (inline_size - border-inline - padding-inline) * aspect-ratio-block / aspect-ratio-inline + border-block + padding-block");
   inline_size -= border_padding.InlineSum();
   return inline_size.MulDiv(aspect_ratio.block_size, aspect_ratio.inline_size) +
          border_padding.BlockSum();

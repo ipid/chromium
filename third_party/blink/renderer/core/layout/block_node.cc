@@ -91,6 +91,12 @@
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "ui/gfx/geometry/size_f.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
+#include <sstream>
+// ------ ipid logging END ------
+
 namespace blink {
 
 using mojom::blink::FormControlType;
@@ -417,6 +423,14 @@ const LayoutResult* BlockNode::Layout(
     const BlockBreakToken* break_token,
     const EarlyBreak* early_break,
     const ColumnSpannerPath* column_spanner_path) const {
+  IpidDepthLog ipid_depth_log("BlockNode::Layout");
+
+  ipid_depth_log.AddField("node", ToString());
+  ipid_depth_log.AddField("space",
+                          ipid::GetConstraintSpaceString(constraint_space));
+
+  ipid_depth_log.PrintContext("Layout START");
+
   // The exclusion space internally is a pointer to a shared vector, and
   // equality of exclusion spaces is performed using pointer comparison on this
   // internal shared vector.
@@ -481,8 +495,12 @@ const LayoutResult* BlockNode::Layout(
     // added or removed scrollbars during overflow recalculation, which may have
     // marked us for layout. In that case the cached result is unusable, and we
     // need to re-lay out now.
-    if (!box_->NeedsLayout())
+    if (!box_->NeedsLayout()) {
+      ipid_depth_log.AddField("result",
+                              ipid::GetLayoutResultString(layout_result));
+      ipid_depth_log.PrintContext("Layout HIT CACHE");
       return layout_result;
+    }
   }
 
   if (!fragment_geometry) {
@@ -609,6 +627,15 @@ const LayoutResult* BlockNode::Layout(
        inline_size_before != fragment_geometry->border_box_size.inline_size) &&
       !DisableLayoutSideEffectsScope::IsDisabled() &&
       !IsBreakInside(break_token)) {
+    if (scrollbars_before != scrollbars_after) {
+      ipid_depth_log.PrintContext(
+          "Relayout triggered by scrollbars_before != scrollbars_after");
+    } else {
+      ipid_depth_log.PrintContext(
+          "Relayout triggered by inline_size_before != "
+          "fragment_geometry->border_box_size.inline_size");
+    }
+
     bool freeze_horizontal = false, freeze_vertical = false;
     // If we're in a measure pass, freeze both scrollbars right away, to avoid
     // quadratic time complexity for deeply nested flexboxes.
@@ -675,6 +702,8 @@ const LayoutResult* BlockNode::Layout(
   // to the LayoutResult, removing this "side" data-structure.
   UpdateShapeOutsideInfoIfNeeded(*layout_result, constraint_space);
 
+  ipid_depth_log.AddField("result", ipid::GetLayoutResultString(layout_result));
+  ipid_depth_log.PrintContext("Layout SUCCEED");
   return layout_result;
 }
 
@@ -957,6 +986,13 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     const SizeType type,
     const ConstraintSpace& constraint_space,
     const MinMaxSizesFloatInput float_input) const {
+  IpidDepthLog ipid_depth_log("BlockNode::ComputeMinMaxSizes");
+
+  ipid_depth_log.AddField("node", ToString());
+  ipid_depth_log.AddField("space",
+                          ipid::GetConstraintSpaceString(constraint_space));
+  ipid_depth_log.PrintContext("ComputeMinMaxSizes START");
+
   // TODO(layoutng) Can UpdateMarkerTextIfNeeded call be moved
   // somewhere else? List items need up-to-date markers before layout.
   if (IsListItem())
@@ -988,7 +1024,13 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     MinMaxSizes sizes;
     sizes.min_size = border_padding.InlineSum();
     sizes.max_size = sizes.min_size;
-    return MinMaxSizesResult(sizes, /* depends_on_block_constraints */ false);
+
+    MinMaxSizesResult final_result(sizes, /* depends_on_block_constraints */ false);
+
+    ipid_depth_log.AddField("final_result", ipid::GetMinMaxSizesResultString(final_result));
+    ipid_depth_log.PrintContext("END: Not performing layout & is flex/grid, result sizes only include border + padding");
+
+    return final_result;
   }
 
   bool is_orthogonal_flow_root =
@@ -1020,7 +1062,10 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
         Style().LogicalWidth().HasPercentOrStretch() ||
         Style().LogicalMinWidth().HasPercentOrStretch() ||
         Style().LogicalMaxWidth().HasPercentOrStretch();
-    return MinMaxSizesResult(sizes, depends_on_block_constraints);
+    MinMaxSizesResult ret(sizes, depends_on_block_constraints);
+    ipid_depth_log.AddField("final_result", ipid::GetMinMaxSizesResultString(ret));
+    ipid_depth_log.PrintContext("END: orthogonal flow root, result from layout");
+    return ret;
   }
 
   // Returns if we are (directly) dependent on any block constraints.
@@ -1038,7 +1083,10 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   if (IsReplaced()) {
     MinMaxSizes sizes;
     sizes = IntrinsicFragmentGeometry().border_box_size.inline_size;
-    return {sizes, DependsOnBlockConstraints()};
+    MinMaxSizesResult ret{sizes, DependsOnBlockConstraints()};
+    ipid_depth_log.AddField("final_result", ipid::GetMinMaxSizesResultString(ret));
+    ipid_depth_log.PrintContext("END: replaced element, result from IntrinsicFragmentGeometry");
+    return ret;
   }
 
   const bool has_aspect_ratio = !Style().AspectRatio().IsAuto();
@@ -1051,9 +1099,12 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
           border_padding, Style().LogicalAspectRatio(),
           Style().BoxSizingForAspectRatio(),
           fragment_geometry.border_box_size.block_size);
-      return MinMaxSizesResult({inline_size_from_ar, inline_size_from_ar},
-                               DependsOnBlockConstraints(),
-                               /* applied_aspect_ratio */ true);
+      MinMaxSizesResult ret({inline_size_from_ar, inline_size_from_ar},
+                            DependsOnBlockConstraints(),
+                            /* applied_aspect_ratio */ true);
+      ipid_depth_log.AddField("final_result", ipid::GetMinMaxSizesResultString(ret));
+      ipid_depth_log.PrintContext("END: aspect-ratio content, result from aspect ratio");
+      return ret;
     }
   }
 
@@ -1071,6 +1122,7 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   // block constraints.
   if (can_use_cached_intrinsic_inline_sizes &&
       !box_->IntrinsicLogicalWidthsDependsOnBlockConstraints()) {
+    ipid_depth_log.AddField("result source 1", "box_->CachedIndefiniteIntrinsicLogicalWidths()");
     result = box_->CachedIndefiniteIntrinsicLogicalWidths();
   }
 
@@ -1080,9 +1132,17 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
       !UseParentPercentageResolutionBlockSizeForChildren()) {
     result = box_->CachedIntrinsicLogicalWidths(
         IntrinsicFragmentGeometry().border_box_size.block_size);
+    ipid_depth_log.AddField(
+        "result source 2",
+        String::Format("box_->CachedIntrinsicLogicalWidths(%s)",
+                       IntrinsicFragmentGeometry()
+                           .border_box_size.block_size.ToString()
+                           .Utf8()
+                           .c_str()));
   }
 
   if (!result) {
+    ipid_depth_log.AddField("result source 3", "Algorithm");
     const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
     result = ComputeMinMaxSizesWithAlgorithm(
         LayoutAlgorithmParams(*this, fragment_geometry, constraint_space),
@@ -1091,6 +1151,11 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     const BoxStrut border_padding =
         fragment_geometry.border + fragment_geometry.padding;
     if (auto min_size = ContentMinimumInlineSize(*this, border_padding)) {
+      if (*min_size != result->sizes.min_size) {
+        std::ostringstream oss;
+        oss << "algorithm min_size " << result->sizes.min_size << " is overwritten by ContentMinimumInlineSize " << *min_size;
+        ipid_depth_log.PrintContext(oss.str().c_str());
+      }
       result->sizes.min_size = *min_size;
     }
 
@@ -1128,6 +1193,8 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
       (DependsOnBlockConstraints() ||
        UseParentPercentageResolutionBlockSizeForChildren()) &&
       (result->depends_on_block_constraints || has_aspect_ratio);
+  ipid_depth_log.AddField("final_result", ipid::GetMinMaxSizesResultString(*result));
+  ipid_depth_log.PrintContext("END: min max sizes SUCCEED, result from algorithm");
   return *result;
 }
 

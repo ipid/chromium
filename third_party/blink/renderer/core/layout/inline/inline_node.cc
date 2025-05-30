@@ -62,6 +62,11 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_offset_map.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
+#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 namespace {
@@ -1711,12 +1716,22 @@ const LayoutResult* InlineNode::Layout(
     const BreakToken* break_token,
     const ColumnSpannerPath* column_spanner_path,
     InlineChildLayoutContext* context) const {
+  IpidDepthLog ipid_depth_log("InlineNode::Layout");
+
+  ipid_depth_log.AddField("node",
+                          box_->ToString());
+  ipid_depth_log.AddField("space",
+                          ipid::GetConstraintSpaceString(constraint_space));
+
   PrepareLayoutIfNeeded();
 
   const auto* inline_break_token = To<InlineBreakToken>(break_token);
   InlineLayoutAlgorithm algorithm(*this, constraint_space, inline_break_token,
                                   column_spanner_path, context);
-  return algorithm.Layout();
+  const LayoutResult* ret = algorithm.Layout();
+  ipid_depth_log.AddField("result", ipid::GetLayoutResultString(ret));
+  ipid_depth_log.PrintContext("END: InlineLayoutAlgorithm::Layout");
+  return ret;
 }
 
 namespace {

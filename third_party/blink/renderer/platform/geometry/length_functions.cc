@@ -29,6 +29,10 @@
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size_f.h"
 
+// ------ ipid logging START ------
+#include <iostream>
+// ------ ipid logging END ------
+
 namespace blink {
 
 int IntValueForLength(const Length& length, int maximum_value) {
@@ -68,11 +72,17 @@ LayoutUnit MinimumValueForLengthInternal(const Length& length,
                                          LayoutUnit maximum_value,
                                          const EvaluationInput& input) {
   switch (length.GetType()) {
-    case Length::kPercent:
+    case Length::kPercent: {
       // Don't remove the extra cast to float. It is needed for rounding on
       // 32-bit Intel machines that use the FPU stack.
-      return LayoutUnit(
+      LayoutUnit ret = LayoutUnit(
           static_cast<float>(maximum_value * length.Percent() / 100.0f));
+
+      std::cout << "[ipid] " << length.Percent() << "% of " << maximum_value
+                << " is " << ret << std::endl;
+
+      return ret;
+    }
     case Length::kCalculated:
       return LayoutUnit(length.NonNanCalculatedValue(maximum_value, input));
     case Length::kFillAvailable:
