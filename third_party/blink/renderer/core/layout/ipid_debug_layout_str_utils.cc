@@ -1,19 +1,20 @@
-#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
 
 #include <sstream>
 
 #include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
+#include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/min_max_sizes.h"
 
 namespace blink::ipid {
 
-const char* btos(bool b) {
+const char* btos(const bool b) {
   return b ? "true" : "false";
 }
 
 // 返回SizeType的字符串表示
-const char* GetSizeTypeString(SizeType type) {
+const char* GetSizeTypeString(const SizeType type) {
   switch (type) {
     case SizeType::kContent:
       return "kContent";
@@ -25,8 +26,8 @@ const char* GetSizeTypeString(SizeType type) {
 }
 
 // 返回LayoutResult::EStatus的字符串表示
-const char* GetLayoutResultStatusString(LayoutResult::EStatus status) {
-  switch (status) {
+const char* GetLayoutResultStatusString(const int status) {
+  switch (static_cast<LayoutResult::EStatus>(status)) {
     case LayoutResult::EStatus::kSuccess:
       return "kSuccess";
     case LayoutResult::EStatus::kBfcBlockOffsetResolved:
@@ -89,7 +90,7 @@ std::string GetLayoutResultString(const LayoutResult* layout_result) {
 }
 
 // 返回AutoSizeBehavior的字符串表示
-const char* GetAutoSizeBehaviorString(AutoSizeBehavior behavior) {
+const char* GetAutoSizeBehaviorString(const AutoSizeBehavior& behavior) {
   switch (behavior) {
     case AutoSizeBehavior::kFitContent:
       return "kFitContent";
@@ -121,7 +122,7 @@ std::string GetConstraintSpaceString(const ConstraintSpace& constraint_space) {
 }
 
 // 返回LengthTypeInternal的字符串表示
-const char* GetLengthTypeInternalString(LengthTypeInternal type) {
+const char* GetLengthTypeInternalString(const LengthTypeInternal& type) {
   switch (type) {
     case LengthTypeInternal::kMin:
       return "kMin";
@@ -135,7 +136,7 @@ const char* GetLengthTypeInternalString(LengthTypeInternal type) {
 }
 
 // 返回FitContentMode的字符串表示
-const char* GetFitContentModeString(FitContentMode mode) {
+const char* GetFitContentModeString(const FitContentMode& mode) {
   switch (mode) {
     case FitContentMode::kNormal:
       return "kNormal";
@@ -149,7 +150,8 @@ const char* GetFitContentModeString(FitContentMode mode) {
 }
 
 // 返回CalcSizeKeywordBehavior的字符串表示
-const char* GetCalcSizeKeywordBehaviorString(CalcSizeKeywordBehavior behavior) {
+const char* GetCalcSizeKeywordBehaviorString(
+    const CalcSizeKeywordBehavior& behavior) {
   switch (behavior) {
     case CalcSizeKeywordBehavior::kAsSpecified:
       return "kAsSpecified";
@@ -158,6 +160,12 @@ const char* GetCalcSizeKeywordBehaviorString(CalcSizeKeywordBehavior behavior) {
     default:
       return "<Unknown>";
   }
+}
+
+std::string GetLogicalSizeString(const LogicalSize& logical_size) {
+  std::ostringstream oss;
+  oss << "Logical {" << logical_size.inline_size << "x" << logical_size.block_size << "}";
+  return oss.str();
 }
 
 }  // namespace blink::ipid

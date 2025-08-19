@@ -30,6 +30,7 @@
 #include "ui/gfx/geometry/size_f.h"
 
 // ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
 #include <iostream>
 // ------ ipid logging END ------
 
@@ -71,6 +72,8 @@ float FloatValueForLength(const Length& length,
 LayoutUnit MinimumValueForLengthInternal(const Length& length,
                                          LayoutUnit maximum_value,
                                          const EvaluationInput& input) {
+  IpidDepthLog ipid_depth_log("length_functions.cc MinimumValueForLengthInternal");
+
   switch (length.GetType()) {
     case Length::kPercent: {
       // Don't remove the extra cast to float. It is needed for rounding on
@@ -78,8 +81,10 @@ LayoutUnit MinimumValueForLengthInternal(const Length& length,
       LayoutUnit ret = LayoutUnit(
           static_cast<float>(maximum_value * length.Percent() / 100.0f));
 
-      std::cout << "[ipid] " << length.Percent() << "% of " << maximum_value
-                << " is " << ret << std::endl;
+      ipid_depth_log.AddField("length.Percent()",
+                              WTF::String::Format("%f", length.Percent()));
+      ipid_depth_log.AddField("result", ret.ToString());
+      ipid_depth_log.PrintContext("Resolve percentage to actual length");
 
       return ret;
     }

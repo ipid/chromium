@@ -9,6 +9,7 @@
 
 #include "base/not_fatal_until.h"
 #include "base/types/optional_util.h"
+#include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/baseline_utils.h"
 #include "third_party/blink/renderer/core/layout/block_break_token.h"
@@ -42,6 +43,11 @@
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "third_party/blink/renderer/platform/text/writing_mode_utils.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+// ------ ipid logging END ------
 
 namespace blink {
 
@@ -1283,6 +1289,9 @@ ConstraintSpace FlexLayoutAlgorithm::BuildSpaceForLayout(
 void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
     Phase phase,
     HeapVector<Member<LayoutBox>>* oof_children) {
+  IpidDepthLog ipid_depth_log("FlexLayoutAlgorithm::ConstructAndAppendFlexItems");
+
+  ipid_depth_log.AddField("container", Node().ToString());
 
   wtf_size_t item_index = 0;
   FlexChildIterator iterator(Node());
@@ -1434,7 +1443,17 @@ void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
     // need to handle resolving the length in the main axis twice.
     auto resolve_main_length = [&](const Length& used_flex_basis_length,
                                    const Length* auto_length) -> LayoutUnit {
+      IpidDepthLog ipid_depth_log(
+          "FlexLayoutAlgorithm::ConstructAndAppendFlexItems - "
+          "resolve_main_length");
+
+      ipid_depth_log.AddField("used_flex_basis_length (flex-basis)",
+                              used_flex_basis_length.ToString());
+      ipid_depth_log.AddField("auto_length", auto_length->ToString());
+
       if (is_main_axis_inline_axis) {
+        ipid_depth_log.PrintContext(
+            "call ResolveMainInlineLength to resolve flex-basis");
         const LayoutUnit inline_size = ResolveMainInlineLength(
             flex_basis_space, child_style, border_padding_in_child_writing_mode,
             [&](SizeType type) -> MinMaxSizesResult {
@@ -1444,15 +1463,30 @@ void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
             used_flex_basis_length, auto_length);
 
         if (inline_size != kIndefiniteSize) {
+          ipid_depth_log.AddField("resolved flex-basis",
+                                  inline_size.ToString());
+          ipid_depth_log.PrintContext("flex-basis resolved to definite size");
           return inline_size;
         }
 
         // We weren't able to resolve the length (i.e. we were a unresolvable
         // %-age or similar), fallback to the max-content size.
         is_used_flex_basis_indefinite = true;
-        return MinMaxSizesFunc(SizeType::kContent).sizes.max_size;
+
+        LayoutUnit max_content_size =
+            MinMaxSizesFunc(SizeType::kContent).sizes.max_size;
+        ipid_depth_log.AddField("max-content size",
+                                max_content_size.ToString());
+        ipid_depth_log.PrintContext(
+            "flex-basis resolved to kIndefinite, use "
+            "max-content size: "
+            "MinMaxSizesFunc(SizeType::kContent).sizes.max_size as flex-basis");
+        return max_content_size;
       }
 
+      ipid_depth_log.PrintContext(
+          "call ResolveMainBlockLength(auto = max-content) to resolve "
+          "flex-basis, its result is the resolved flex-basis");
       return ResolveMainBlockLength(
           flex_basis_space, child_style, border_padding_in_child_writing_mode,
           used_flex_basis_length, auto_length, [&](SizeType type) {
@@ -1475,7 +1509,14 @@ void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
               Style().BoxAlign() != EBoxAlignment::kStretch))
                 ? Length::FitContent()
                 : Length::MaxContent();
-
+        ipid_depth_log.PrintContext(
+            String::Format(
+                "Due to flex_basis has auto, use %s as flex-basis, value = %s",
+                is_horizontal_flow_ ? "width (because flex-direction: row)"
+                                    : "height (because flex-direction: column)",
+                specified_length_in_main_axis.ToString().Utf8().c_str())
+                .Utf8()
+                .c_str());
         LayoutUnit auto_flex_basis_size = resolve_main_length(
             specified_length_in_main_axis, &auto_size_length);
         if (child_style.BoxSizing() == EBoxSizing::kContentBox) {
@@ -1485,6 +1526,9 @@ void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
         auto_flex_basis_length = Length::Fixed(auto_flex_basis_size);
       }
 
+      ipid_depth_log.PrintContext(
+          "call resolve_main_length (length = flex-basis) to resolve "
+          "flex-basis");
       LayoutUnit main_size = resolve_main_length(
           flex_basis, base::OptionalToPtr(auto_flex_basis_length));
 
@@ -1536,9 +1580,24 @@ void FlexLayoutAlgorithm::ConstructAndAppendFlexItems(
       const LayoutUnit specified_size_suggestion = ([&]() -> LayoutUnit {
         const Length& specified_length_in_main_axis =
             is_horizontal_flow_ ? child_style.Width() : child_style.Height();
+        const char* ipid_specified_length_src = is_horizontal_flow_
+                                                    ? "child_style['width']"
+                                                    : "child_style['height']";
+
         if (specified_length_in_main_axis.HasAuto()) {
           return LayoutUnit::Max();
         }
+
+        ipid_depth_log.PrintContext(
+            String::Format("call %s (length = "
+                           "specified_length_in_main_axis from %s) for "
+                           "specified_size_suggestion",
+                           is_main_axis_inline_axis ? "ResolveMainInlineLength"
+                                                    : "ResolveMainBlockLength",
+                           ipid_specified_length_src)
+                .Utf8()
+                .c_str());
+
         const LayoutUnit resolved_size =
             is_main_axis_inline_axis
                 ? ResolveMainInlineLength(

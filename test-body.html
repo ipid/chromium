@@ -6,32 +6,17 @@
   }
 
   .min-content {
-    width: 10px;
+    width: 20px;
     min-width: min-content;
-    outline: 2px solid;
-    display: flex;
-    flex-wrap: wrap;
-  }
-  .max-content {
-    width: 10px;
-    min-width: max-content;
-    outline: 2px solid;
-    display: flex;
-    flex-wrap: wrap;
+    background-color: orange;
   }
   .child {
-    width: 20px;
-    height: 20px;
+    width: 200%;
+    height: 27px;
     background-color: pink;
   }
 </style>
 
-<div class="min-content" data-expected-width="20">
-  <div class="child"></div>
-  <div class="child"></div>
-</div>
-
-<div class="max-content" data-expected-width="40">
-  <div class="child"></div>
-  <div class="child"></div>
+<div class="min-content">
+  <img src="http://127.0.0.1:8080/log3.jpg" />
 </div>

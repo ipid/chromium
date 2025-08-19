@@ -16,6 +16,11 @@
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 namespace {
@@ -639,6 +644,13 @@ bool ComputeOofInlineDimensions(
     const BoxStrut& container_insets,
     WritingDirectionMode container_writing_direction,
     LogicalOofDimensions* dimensions) {
+  IpidDepthLog ipid_depth_log("absolute_utils.cc: ComputeOofInlineDimensions");
+
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("available_size",
+                          ipid::GetLogicalSizeString(space.AvailableSize()));
+  ipid_depth_log.PrintContext("BEGIN ComputeOofInlineDimensions");
+
   DCHECK(dimensions);
   DCHECK_GE(imcb.InlineSize(), LayoutUnit());
 
@@ -707,9 +719,20 @@ bool ComputeOofInlineDimensions(
 
     // Determine how "auto" should resolve.
     bool apply_automatic_min_size = false;
+    const char* auto_length_reason = nullptr;
+
     const Length& auto_length = ([&]() {
       // Tables always shrink-to-fit unless explicitly asked to stretch.
       if (node.IsTable()) {
+        if (is_explicit_stretch) {
+          auto_length_reason =
+              "node is <table> and is_explicit_stretch == true, use "
+              "FillAvailable";
+        } else {
+          auto_length_reason =
+              "node is <table> and is_explicit_stretch == false, use "
+              "FitContent";
+        }
         return is_explicit_stretch ? Length::FillAvailable()
                                    : Length::FitContent();
       }
@@ -727,11 +750,26 @@ bool ComputeOofInlineDimensions(
         if (style.OverflowInlineDirection() == EOverflow::kVisible) {
           apply_automatic_min_size = true;
         }
+
+        auto_length_reason =
+            "has aspect-ratio and can compute block-size without layout, use "
+            "FitContent";
         return Length::FitContent();
+      }
+
+      if (is_stretch) {
+        auto_length_reason = "is_stretch == true, use FillAvailable";
+      } else {
+        auto_length_reason = "is_stretch == false, use FitContent";
       }
       return is_stretch ? Length::FillAvailable() : Length::FitContent();
     })();
 
+    ipid_depth_log.AddField("auto_length_reason", auto_length_reason);
+    ipid_depth_log.PrintContext(
+        "call ResolveMainInlineLength to get main_inline_size to clamp "
+        "min_max_inline_sizes (length = node.style.width, "
+        "override_available_size = imcb.InlineSize())");
     const LayoutUnit main_inline_size = ResolveMainInlineLength(
         space, style, border_padding, MinMaxSizesFunc, main_inline_length,
         &auto_length, imcb.InlineSize());
@@ -794,6 +832,8 @@ const LayoutResult* ComputeOofBlockDimensions(
     const BoxStrut& container_insets,
     WritingDirectionMode container_writing_direction,
     LogicalOofDimensions* dimensions) {
+  IpidDepthLog ipid_depth_log("absolute_utils.cc: ComputeOofBlockDimensions");
+
   DCHECK(dimensions);
   DCHECK_GE(imcb.BlockSize(), LayoutUnit());
 
@@ -813,6 +853,10 @@ const LayoutResult* ComputeOofBlockDimensions(
 
     // Nothing depends on our intrinsic-size, so we can safely use the initial
     // variant of these functions.
+    ipid_depth_log.PrintContext(
+        "call ResolveMainBlockLength to get main_block_size to clamp "
+        "min_max_block_sizes (length = node.style.height, "
+        "override_available_size = imcb.BlockSize())");
     const LayoutUnit main_block_size = ResolveMainBlockLength(
         space, style, border_padding, style.LogicalHeight(),
         &Length::FillAvailable(), kIndefiniteSize, imcb.BlockSize());

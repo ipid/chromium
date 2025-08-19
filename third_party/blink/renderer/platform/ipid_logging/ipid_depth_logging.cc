@@ -1,7 +1,7 @@
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 #pragma clang diagnostic ignored "-Wglobal-constructors"
 
-#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
 
 #include <iostream>
 #include <sstream>
@@ -70,8 +70,10 @@ void IpidDepthLog::PrintContext(const char* message) const {
 
   // 输出所有记录的字段
   for (const auto& field : fields_) {
-    bool do_wrap = field.second.find("\n") >= 0 || field.second.size() >= 80;
-    std::cout << "  [[" << field.first << "]]" << (do_wrap ? ":\n" : ": ") << field.second << "\n";
+    bool do_wrap = field.second.find("\n") != std::string::npos ||
+                   field.second.size() >= 80;
+    std::cout << "  [[" << field.first << "]]" << (do_wrap ? ":\n" : ": ")
+              << field.second << "\n";
   }
 
   std::cout << std::endl;

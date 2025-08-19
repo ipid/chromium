@@ -23,7 +23,7 @@
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 
 // ------ ipid logging START ------
-#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
 #include <sstream>
 // ------ ipid logging END ------
 

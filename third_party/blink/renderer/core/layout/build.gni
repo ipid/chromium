@@ -46,6 +46,10 @@ blink_core_sources_layout = [
   "block_child_iterator.h",
   "block_layout_algorithm.cc",
   "block_layout_algorithm.h",
+  # ------ ipid logging START ------
+  "ipid_debug_layout_str_utils.cc",
+  "ipid_debug_layout_str_utils.h",
+  # ------ ipid logging END ------
   "block_layout_algorithm_utils.cc",
   "block_layout_algorithm_utils.h",
   "block_node.cc",
@@ -659,10 +663,6 @@ blink_core_sources_layout = [
   "tree_traversal_utils.cc",
   "tree_traversal_utils.h",
   "unpositioned_float.h",
-  # ------ ipid logging START ------
-  "ipid_logging/ipid_depth_logging.cc",
-  "ipid_debug_str_utils.cc",
-  # ------ ipid logging END ------
 ]
 
 if (is_mac) {

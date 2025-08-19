@@ -27,6 +27,11 @@
 #include "third_party/blink/renderer/core/layout/table/table_layout_utils.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 namespace {
@@ -1507,6 +1512,11 @@ LayoutUnit ColumnLayoutAlgorithm::ConstrainColumnBlockSize(
     LayoutUnit size,
     LayoutUnit row_offset,
     LayoutUnit available_outer_space) const {
+  IpidDepthLog ipid_depth_log(
+      "ColumnLayoutAlgorithm::ConstrainColumnBlockSize");
+  ipid_depth_log.AddField("space",
+                          ipid::GetConstraintSpaceString(GetConstraintSpace()));
+
   // Avoid becoming shorter than the tallest piece of unbreakable content.
   size = std::max(size, tallest_unbreakable_block_size_);
 
@@ -1541,6 +1551,9 @@ LayoutUnit ColumnLayoutAlgorithm::ConstrainColumnBlockSize(
   LayoutUnit extra = BorderScrollbarPadding().BlockSum();
   size += extra;
 
+  ipid_depth_log.PrintContext(
+      "call ResolveInitialMaxBlockLength to get column max (length = "
+      "node.style['max-height'])");
   LayoutUnit max = ResolveInitialMaxBlockLength(space, style, BorderPadding(),
                                                 style.LogicalMaxHeight());
   LayoutUnit extent = kIndefiniteSize;
@@ -1549,7 +1562,17 @@ LayoutUnit ColumnLayoutAlgorithm::ConstrainColumnBlockSize(
   const Length& auto_length = space.IsBlockAutoBehaviorStretch()
                                   ? Length::FillAvailable()
                                   : Length::FitContent();
-
+  if (space.IsBlockAutoBehaviorStretch()) {
+    ipid_depth_log.PrintContext(
+        "call ResolveMainBlockLength to get column extent (length = "
+        "node.style.height, auto_length = fit-available because "
+        "space.IsBlockAutoBehaviorStretch() == true)");
+  } else {
+    ipid_depth_log.PrintContext(
+        "call ResolveMainBlockLength to get column extent (length = "
+        "node.style.height, auto_length = fit-content because "
+        "space.IsBlockAutoBehaviorStretch() == false)");
+  }
   extent = ResolveMainBlockLength(space, style, BorderPadding(), block_length,
                                   &auto_length, kIndefiniteSize);
   // A specified block-size will just constrain the maximum length.
@@ -1558,6 +1581,9 @@ LayoutUnit ColumnLayoutAlgorithm::ConstrainColumnBlockSize(
   }
 
   // A specified min-block-size may increase the maximum length.
+  ipid_depth_log.PrintContext(
+        "call ResolveInitialMinBlockLength to get column min-height (length = "
+        "node.style['min-height'])");
   LayoutUnit min = ResolveInitialMinBlockLength(space, style, BorderPadding(),
                                                 style.LogicalMinHeight());
   max = std::max(max, min);

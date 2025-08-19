@@ -63,8 +63,8 @@
 #include "third_party/blink/renderer/platform/wtf/text/text_offset_map.h"
 
 // ------ ipid logging START ------
-#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
-#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
 // ------ ipid logging END ------
 
 namespace blink {

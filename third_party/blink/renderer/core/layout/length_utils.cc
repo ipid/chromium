@@ -24,8 +24,8 @@
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 
 // ------ ipid logging START ------
-#include "third_party/blink/renderer/core/layout/ipid_logging/ipid_depth_logging.h"
-#include "third_party/blink/renderer/core/layout/ipid_debug_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
 #include <sstream>
 // ------ ipid logging END ------
 
@@ -52,9 +52,8 @@ LayoutUnit ResolveInlineLengthInternal(
 
   ipid_depth_log.AddField("space",
                           ipid::GetConstraintSpaceString(constraint_space));
-  if (length != original_length) {
-    ipid_depth_log.AddField("original_length", original_length.ToString());
-  }
+
+  ipid_depth_log.AddField("original_length", original_length.ToString());
   ipid_depth_log.AddField("auto_length",
                           auto_length ? auto_length->ToString() : "<nullptr>");
   ipid_depth_log.AddField("!! used length !!", length.ToString());
@@ -276,9 +275,7 @@ LayoutUnit ResolveBlockLengthInternal(
       original_length.IsAuto() && auto_length ? *auto_length : original_length;
 
   ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(constraint_space));
-  if (length != original_length) {
-    ipid_depth_log.AddField("original_length", original_length.ToString());
-  }
+  ipid_depth_log.AddField("original_length", original_length.ToString());
   ipid_depth_log.AddField("auto_length", auto_length ? auto_length->ToString() : "<nullptr>");
   ipid_depth_log.AddField("!! used length !!", length.ToString());
   ipid_depth_log.AddField("length_type_internal", ipid::GetLengthTypeInternalString(length_type));
@@ -490,6 +487,11 @@ namespace {
 MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
     const BlockNode& child,
     const ConstraintSpace& space) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeMinAndMaxContentContributionForReplaced");
+  ipid_depth_log.AddField("child", child.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   const auto& child_style = child.Style();
   const BoxStrut border_padding =
       ComputeBorders(space, child) + ComputePadding(space, child_style);
@@ -502,6 +504,10 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
     // TODO(ikilpatrick): No browser does this today, but we'd get slightly
     // better results here if we also considered the min-block size, and
     // transferred through the aspect-ratio (if available).
+    ipid_depth_log.PrintContext(
+        "because child.width or child.max-width has percent, result.min_size "
+        "will be replaced by ResolveMinInlineLength(length = "
+        "child.style['min-width'])");
     result.min_size = ResolveMinInlineLength(
         space, child_style, border_padding,
         [&](SizeType) -> MinMaxSizesResult {
@@ -535,6 +541,11 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
     const BlockNode& child,
     const ConstraintSpace& space,
     MinMaxSizesFunctionRef original_min_max_sizes_func) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeMinAndMaxContentContributionInternal");
+  ipid_depth_log.AddField("child", child.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   const auto& style = child.Style();
   const auto border_padding =
       ComputeBorders(space, child) + ComputePadding(space, style);
@@ -573,6 +584,11 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
   // First attempt to resolve the main-length, if we can't resolve (e.g. a
   // percentage, or similar) it'll return a kIndefiniteSize.
   const Length& main_length = style.LogicalWidth();
+  ipid_depth_log.PrintContext(
+      "call ResolveMainInlineLength (length = child.style['width']) to see if "
+      "style.width is definite. If Definite, use (style.width, style.width) as "
+      "contribution. Otherwise, use ComputeMinMaxSizes(SizeType::kContent) as "
+      "contribution.");
   const LayoutUnit extent =
       ResolveMainInlineLength(space, style, border_padding, min_max_sizes_func,
                               main_length, &Length::FitContent());
@@ -583,22 +599,41 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
                           ? min_max_sizes_func(SizeType::kContent).sizes
                           : MinMaxSizes{extent, extent};
 
+  ipid_depth_log.AddField("extent", extent.ToString());
+  ipid_depth_log.AddField("initial contribution", ipid::GetMinMaxSizesString(sizes));
+  ipid_depth_log.PrintContext("Got initial contribution");
+
   // If we have calc-size() with a sizing-keyword of auto/fit-content/stretch
   // we need to perform an additional step. Treat the sizing-keyword as auto,
   // then resolve auto as both min-content, and max-content.
   if (main_length.IsCalculated() &&
       (main_length.HasAuto() || main_length.HasFitContent() ||
        main_length.HasStretch())) {
+    ipid_depth_log.PrintContext(
+        "Because child.style['width'] is calc-size() with "
+        "auto/fit-content/stretch, call ResolveMainInlineLength (length = "
+        "kMinContent) to get result.min_size, treating "
+        "auto/fit-content/stretch as min-content");
     sizes.min_size = ResolveMainInlineLength(
         space, style, border_padding, min_max_sizes_func, main_length,
         /* auto_length */ &Length::MinContent(),
         /* override_available_size */ kIndefiniteSize,
         CalcSizeKeywordBehavior::kAsAuto);
+
+    ipid_depth_log.PrintContext(
+        "Because child.style['width'] is calc-size() with "
+        "auto/fit-content/stretch, call ResolveMainInlineLength (length = "
+        "kMaxContent) to get result.max_size, treating "
+        "auto/fit-content/stretch as max-content");
     sizes.max_size = ResolveMainInlineLength(
         space, style, border_padding, min_max_sizes_func, main_length,
         /* auto_length */ &Length::MaxContent(),
         /* override_available_size */ kIndefiniteSize,
         CalcSizeKeywordBehavior::kAsAuto);
+
+    ipid_depth_log.AddField("calc-size affected contribution",
+                            ipid::GetMinMaxSizesString(sizes));
+    ipid_depth_log.PrintContext("Got calc-size affected contribution");
   }
 
   // Check if we should apply the automatic minimum size.
@@ -613,6 +648,9 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
   // https://github.com/w3c/csswg-drafts/issues/10721
   if (style.LogicalMinWidth().HasFitContent() ||
       style.LogicalMaxWidth().HasFitContent()) {
+    ipid_depth_log.PrintContext(
+        "min-width or max-width has fit-content, call ComputeMinMaxInlineSizes "
+        "to get min-sizes and max-sizes");
     const MinMaxSizes min_sizes = ComputeMinMaxInlineSizes(
         space, child, border_padding, auto_min_length, min_max_sizes_func,
         TransferredSizesMode::kNormal, FitContentMode::kMinContribution);
@@ -621,11 +659,23 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
         TransferredSizesMode::kNormal, FitContentMode::kMaxContribution);
     sizes.min_size = min_sizes.ClampSizeToMinAndMax(sizes.min_size);
     sizes.max_size = max_sizes.ClampSizeToMinAndMax(sizes.max_size);
+
+    ipid_depth_log.AddField("fit-content calc min_sizes",
+                            ipid::GetMinMaxSizesString(min_sizes));
+    ipid_depth_log.AddField("fit-content calc max_sizes",
+                            ipid::GetMinMaxSizesString(max_sizes));
+    ipid_depth_log.AddField("fit-content clamped sizes",
+                            ipid::GetMinMaxSizesString(sizes));
+    ipid_depth_log.PrintContext("sizes clamped by fit-content computed result");
   } else {
     const MinMaxSizes min_max_sizes = ComputeMinMaxInlineSizes(
         space, child, border_padding, auto_min_length, min_max_sizes_func);
     sizes.Constrain(min_max_sizes.max_size);
     sizes.Encompass(min_max_sizes.min_size);
+
+    ipid_depth_log.AddField("min_max_sizes", ipid::GetMinMaxSizesString(min_max_sizes));
+    ipid_depth_log.AddField("sizes", ipid::GetMinMaxSizesString(sizes));
+    ipid_depth_log.PrintContext("sizes clamped by min_max_sizes computed result");
   }
 
   return {sizes, depends_on_block_constraints};
@@ -705,6 +755,11 @@ LayoutUnit ComputeInlineSizeForFragmentInternal(
     const BlockNode& node,
     const BoxStrut& border_padding,
     MinMaxSizesFunctionRef min_max_sizes_func) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeInlineSizeForFragmentInternal");
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   const auto& style = node.Style();
   const Length& logical_width = style.LogicalWidth();
 
@@ -763,6 +818,9 @@ LayoutUnit ComputeInlineSizeForFragmentInternal(
     return false;
   })();
 
+  ipid_depth_log.PrintContext(
+      "call ResolveMainInlineLength (length = node.style['width']) to get "
+      "extent");
   const LayoutUnit extent =
       ResolveMainInlineLength(space, style, border_padding, min_max_sizes_func,
                               logical_width, &auto_length);
@@ -828,13 +886,27 @@ MinMaxSizes ComputeInitialMinMaxBlockSizes(const ConstraintSpace& space,
                                            const BlockNode& node,
                                            const BoxStrut& border_padding,
                                            LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeInitialMinMaxBlockSizes");
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
   const ComputedStyle& style = node.Style();
-  MinMaxSizes sizes = {ResolveInitialMinBlockLength(
-                           space, style, border_padding,
-                           style.LogicalMinHeight(), override_available_size),
-                       ResolveInitialMaxBlockLength(
-                           space, style, border_padding,
-                           style.LogicalMaxHeight(), override_available_size)};
+
+  ipid_depth_log.PrintContext(
+      "call ResolveInitialMinBlockLength (length = node.style['min-height']) "
+      "to get result.min_size");
+  LayoutUnit sizes_left_part = ResolveInitialMinBlockLength(
+      space, style, border_padding, style.LogicalMinHeight(),
+      override_available_size);
+
+  ipid_depth_log.PrintContext(
+      "call ResolveInitialMaxBlockLength (length = node.style['max-height']) "
+      "to get result.max_size");
+  LayoutUnit sizes_right_part = ResolveInitialMaxBlockLength(
+      space, style, border_padding, style.LogicalMaxHeight(),
+      override_available_size);
+
+  MinMaxSizes sizes = {sizes_left_part, sizes_right_part};
   sizes.max_size = std::max(sizes.max_size, sizes.min_size);
   return sizes;
 }
@@ -845,14 +917,26 @@ MinMaxSizes ComputeMinMaxBlockSizes(const ConstraintSpace& space,
                                     const Length* auto_min_length,
                                     BlockSizeFunctionRef block_size_func,
                                     LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeMinMaxBlockSizes");
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
   const ComputedStyle& style = node.Style();
-  MinMaxSizes sizes = {
-      ResolveMinBlockLength(space, style, border_padding, block_size_func,
-                            style.LogicalMinHeight(), auto_min_length,
-                            override_available_size),
-      ResolveMaxBlockLength(space, style, border_padding,
-                            style.LogicalMaxHeight(), block_size_func,
-                            override_available_size)};
+
+  ipid_depth_log.PrintContext(
+      "call ResolveMinBlockLength (length = node.style['min-height']) to get "
+      "result.min_size");
+  LayoutUnit sizes_left_part = ResolveMinBlockLength(
+      space, style, border_padding, block_size_func, style.LogicalMinHeight(),
+      auto_min_length, override_available_size);
+
+  ipid_depth_log.PrintContext(
+      "call ResolveMaxBlockLength (length = node.style['max-height']) to get "
+      "result.max_size");
+  LayoutUnit sizes_right_part = ResolveMaxBlockLength(
+      space, style, border_padding, style.LogicalMaxHeight(), block_size_func,
+      override_available_size);
+
+  MinMaxSizes sizes = {sizes_left_part, sizes_right_part};
 
   // Clamp the auto min-size by the max-size.
   if (auto_min_length && style.LogicalMinHeight().HasAuto()) {
@@ -938,14 +1022,27 @@ MinMaxSizes ComputeMinMaxInlineSizes(
     TransferredSizesMode transferred_sizes_mode,
     FitContentMode fit_content_mode,
     LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeMinMaxInlineSizes");
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   const ComputedStyle& style = node.Style();
-  MinMaxSizes sizes = {
-      ResolveMinInlineLength(space, style, border_padding, min_max_sizes_func,
-                             style.LogicalMinWidth(), auto_min_length,
-                             override_available_size, fit_content_mode),
-      ResolveMaxInlineLength(space, style, border_padding, min_max_sizes_func,
-                             style.LogicalMaxWidth(), override_available_size,
-                             fit_content_mode)};
+
+  ipid_depth_log.PrintContext(
+      "call ResolveMinInlineLength (length = node.style['min-width']) to get "
+      "result.min_size");
+  LayoutUnit sizes_left_part = ResolveMinInlineLength(
+      space, style, border_padding, min_max_sizes_func, style.LogicalMinWidth(),
+      auto_min_length, override_available_size, fit_content_mode);
+
+  ipid_depth_log.PrintContext(
+      "call ResolveMaxInlineLength (length = node.style['max-width']) to get "
+      "result.max_size");
+  LayoutUnit sizes_right_part = ResolveMaxInlineLength(
+      space, style, border_padding, min_max_sizes_func, style.LogicalMaxWidth(),
+      override_available_size, fit_content_mode);
+
+  MinMaxSizes sizes = {sizes_left_part, sizes_right_part};
 
   // Clamp the auto min-size by the max-size.
   if (auto_min_length && style.LogicalMinWidth().HasAuto()) {
@@ -983,12 +1080,22 @@ LayoutUnit ComputeBlockSizeForFragmentInternal(
     LayoutUnit intrinsic_size,
     LayoutUnit inline_size,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeBlockSizeForFragmentInternal");
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   const ComputedStyle& style = node.Style();
 
   // Scrollable percentage-sized children of table cells (sometimes) are sized
   // to their initial min-size.
   // See: https://drafts.csswg.org/css-tables-3/#row-layout
   if (space.IsRestrictedBlockSizeTableCellChild()) {
+    ipid_depth_log.PrintContext(
+        "space.IsRestrictedBlockSizeTableCellChild() == true, call "
+        "ResolveInitialMinBlockLength (length = node.style['min-height']), "
+        "then resolved min-height is result. This is because scrollable "
+        "percentage-sized children of table cells (sometimes) are sized to "
+        "their initial min-size.");
     return ResolveInitialMinBlockLength(space, style, border_padding,
                                         style.LogicalMinHeight(),
                                         override_available_size);
@@ -1050,6 +1157,9 @@ LayoutUnit ComputeBlockSizeForFragmentInternal(
     return intrinsic_size;
   };
 
+  ipid_depth_log.PrintContext(
+      "call ResolveMainBlockLength (length = node.style['height']) to get "
+      "extent, then it will be clamped by ComputeMinMaxBlockSizes result");
   const LayoutUnit extent = ResolveMainBlockLength(
       space, style, border_padding, logical_height, &auto_length, BlockSizeFunc,
       override_available_size);
@@ -1190,6 +1300,11 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
                                         const ConstraintSpace& space,
                                         const BoxStrut& border_padding,
                                         ReplacedSizeMode mode) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeReplacedSizeInternal");
+
+  ipid_depth_log.AddField("node", node.ToString());
+  ipid_depth_log.AddField("space", ipid::GetConstraintSpaceString(space));
+
   DCHECK(node.IsReplaced());
 
   const ComputedStyle& style = node.Style();
@@ -1230,16 +1345,24 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
             ? space.AvailableSize().block_size
             : space.PercentageResolutionBlockSize();
 
-    block_min_max_sizes = {
-        ResolveMinBlockLength(space, style, border_padding, BlockSizeFunc,
-                              style.LogicalMinHeight(),
-                              /* auto_length */ nullptr,
-                              /* override_available_size */ kIndefiniteSize,
-                              &min_max_percentage_resolution_size),
-        ResolveMaxBlockLength(space, style, border_padding,
-                              style.LogicalMaxHeight(), BlockSizeFunc,
-                              /* override_available_size */ kIndefiniteSize,
-                              &min_max_percentage_resolution_size)};
+    ipid_depth_log.PrintContext(
+        "call ResolveMinBlockLength (length = node.style['min-height']) to get "
+        "block_min_max_sizes.min_size");
+    LayoutUnit block_min_max_sizes_left = ResolveMinBlockLength(
+        space, style, border_padding, BlockSizeFunc, style.LogicalMinHeight(),
+        /* auto_length */ nullptr,
+        /* override_available_size */ kIndefiniteSize,
+        &min_max_percentage_resolution_size);
+
+    ipid_depth_log.PrintContext(
+        "call ResolveMaxBlockLength (length = node.style['max-height']) to get "
+        "block_min_max_sizes.max_size");
+    LayoutUnit block_min_max_sizes_right = ResolveMaxBlockLength(
+        space, style, border_padding, style.LogicalMaxHeight(), BlockSizeFunc,
+        /* override_available_size */ kIndefiniteSize,
+        &min_max_percentage_resolution_size);
+
+    block_min_max_sizes = {block_min_max_sizes_left, block_min_max_sizes_right};
 
     if (space.IsFixedBlockSize()) {
       replaced_block = space.AvailableSize().block_size;
@@ -1248,6 +1371,23 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
       const Length& auto_block_length = space.IsBlockAutoBehaviorStretch()
                                             ? Length::FillAvailable()
                                             : Length::Auto();
+
+      if (space.IsBlockAutoBehaviorStretch()) {
+        ipid_depth_log.PrintContext(
+            "call ResolveMainBlockLength (length = node.style['height']) to "
+            "determine if"
+            "style.height is definite. auto_block_length is kFillAvailable "
+            "because space.IsBlockAutoBehaviorStretch() == true. If Definite, "
+            "replaced_block will be clamped by resolved value.");
+      } else {
+        ipid_depth_log.PrintContext(
+            "call ResolveMainBlockLength (length = node.style['height']) to "
+            "determine if"
+            "style.height is definite. auto_block_length is auto because "
+            "space.IsBlockAutoBehaviorStretch() == false. If Definite, "
+            "replaced_block will be clamped by resolved value.");
+      }
+
       const LayoutUnit block_size = ResolveMainBlockLength(
           space, style, border_padding, block_length, &auto_block_length,
           /* intrinsic_size */ kIndefiniteSize);
@@ -1274,6 +1414,10 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
         size += ComputeDefaultNaturalSize(node).inline_size;
       }
     } else {
+      ipid_depth_log.PrintContext(
+            "call ResolveMainInlineLength (length = kFillAvailable) to "
+            "resolve the space width, this may be shit mountain code");
+
       // Stretch to the available-size if it is definite.
       size = ResolveMainInlineLength(
           space, style, border_padding,
@@ -1324,11 +1468,20 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
     // Don't resolve any inline lengths or constraints.
     inline_min_max_sizes = {LayoutUnit(), LayoutUnit::Max()};
   } else {
-    inline_min_max_sizes = {
-        ResolveMinInlineLength(space, style, border_padding, MinMaxSizesFunc,
-                               style.LogicalMinWidth()),
-        ResolveMaxInlineLength(space, style, border_padding, MinMaxSizesFunc,
-                               style.LogicalMaxWidth())};
+    ipid_depth_log.PrintContext(
+        "call ResolveMinInlineLength (length = node.style['min-width']) to get "
+        "inline_min_max_sizes.min_size");
+    LayoutUnit inline_min_max_sizes_left = ResolveMinInlineLength(
+        space, style, border_padding, MinMaxSizesFunc, style.LogicalMinWidth());
+
+    ipid_depth_log.PrintContext(
+        "call ResolveMaxInlineLength (length = node.style['max-width']) to get "
+        "inline_min_max_sizes.max_size");
+    LayoutUnit inline_min_max_sizes_right = ResolveMaxInlineLength(
+        space, style, border_padding, MinMaxSizesFunc, style.LogicalMaxWidth());
+
+    inline_min_max_sizes = {inline_min_max_sizes_left,
+                            inline_min_max_sizes_right};
 
     if (space.IsFixedInlineSize()) {
       replaced_inline = space.AvailableSize().inline_size;
@@ -1337,6 +1490,10 @@ LogicalSize ComputeReplacedSizeInternal(const BlockNode& node,
       const Length& auto_length = space.IsInlineAutoBehaviorStretch()
                                       ? Length::FillAvailable()
                                       : Length::Auto();
+      ipid_depth_log.PrintContext(
+          "call ResolveMainInlineLength (length = node.style['width']) to see "
+          "if node.style['width'] is definite. If Definite, use resolved value "
+          "to clamp inline_min_max_sizes");
       const LayoutUnit inline_size =
           ResolveMainInlineLength(space, style, border_padding, MinMaxSizesFunc,
                                   inline_length, &auto_length);
