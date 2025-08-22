@@ -53,6 +53,11 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/clear_collection_scope.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 namespace {
@@ -1245,6 +1250,9 @@ LayoutUnit InlineLayoutAlgorithm::SetupLineClampEllipsis() {
 }
 
 const LayoutResult* InlineLayoutAlgorithm::Layout() {
+  IpidDepthLog ipid_depth_log("InlineLayoutAlgorithm::Layout");
+  ipid_depth_log.FPrint("开始执行 InlineLayoutAlgorithm::Layout 操作。");
+
   const auto& constraint_space = GetConstraintSpace();
   ExclusionSpace initial_exclusion_space(constraint_space.GetExclusionSpace());
 

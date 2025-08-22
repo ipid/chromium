@@ -1,0 +1,38 @@
+<style>
+* {
+  box-sizing: border-box;
+  font-size: 0;
+  height: 200px;
+  display: inline-block;
+}
+
+.red {
+  width: 200px;
+  background: red;
+  display: flex;
+
+  .blue {
+    width: 400px;
+    flex: 0 0 auto;
+    background: blue;
+
+    .green {
+      width: 50%;
+      background: green;
+    }
+  }
+
+  .pink {
+    width: 30px;
+    background: pink;
+  }
+}
+
+
+</style>
+
+<div class="red">
+  <div class="blue">
+  </div>
+  <div class="pink"></div>
+</div>

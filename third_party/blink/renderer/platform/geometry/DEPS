@@ -13,5 +13,6 @@ include_rules = [
     "+third_party/blink/renderer/platform/testing",
     "+third_party/blink/renderer/platform/transforms/affine_transform.h",
     "+third_party/blink/renderer/platform/wtf",
+    "+third_party/blink/renderer/platform/ipid_logging",
     "+skia",
 ]

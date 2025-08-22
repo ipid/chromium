@@ -1,10 +1,24 @@
-# TODO(crbug.com/423945285): figure out less restricted blockage for
-# Chromium third_party/
-third_party/
-!third_party/angle
-!third_party/blink
-!third_party/catapult
-!third_party/dawn
+# 忽略所有根级文件和目录
+/*
 
-# No AI features or AI indexing is needed for out/ dir
-out/
+# 但保留 third_party 目录，使其可以被遍历
+!third_party/
+
+# 在 third_party 中忽略所有内容
+third_party/*
+
+# 但保留 blink 目录，使其可以被遍历
+!third_party/blink/
+
+# 在 third_party/blink 中忽略所有内容
+third_party/blink/*
+
+# 只保留 renderer 目录及其所有内容不被忽略
+!third_party/blink/renderer/
+
+# 忽略 renderer 下所有其它目录
+third_party/blink/renderer/*
+
+# 只允许 core 和 platform 这两个目录
+!third_party/blink/renderer/core
+!third_party/blink/renderer/platform

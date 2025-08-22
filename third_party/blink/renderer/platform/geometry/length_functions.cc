@@ -29,6 +29,10 @@
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size_f.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 int IntValueForLength(const Length& length, int maximum_value) {
@@ -38,17 +42,31 @@ int IntValueForLength(const Length& length, int maximum_value) {
 float FloatValueForLength(const Length& length,
                           float maximum_value,
                           const EvaluationInput& input) {
+  IpidDepthLog ipid_depth_log("length_functions.cc: FloatValueForLength");
+  
   switch (length.GetType()) {
-    case Length::kFixed:
-      return length.Pixels();
-    case Length::kPercent:
-      return ClampTo<float>(maximum_value * length.Percent() / 100.0f);
+    case Length::kFixed: {
+      float ret = length.Pixels();
+      ipid_depth_log.FPrint("{} 长度为固定值，返回像素值 {}", length, ret);
+      return ret;
+    }
+    case Length::kPercent: {
+      float ret = ClampTo<float>(maximum_value * length.Percent() / 100.0f);
+      ipid_depth_log.FPrint("{} 的 {}% 为 {}", length, length.Percent(), ret);
+      return ret;
+    }
     case Length::kFillAvailable:
     case Length::kStretch:
-    case Length::kAuto:
-      return static_cast<float>(maximum_value);
-    case Length::kCalculated:
-      return length.NonNanCalculatedValue(maximum_value, input);
+    case Length::kAuto: {
+      float ret = static_cast<float>(maximum_value);
+      ipid_depth_log.FPrint("{} 长度值的类型为 kFillAvailable/kStretch/kAuto，故直接返回最大值 {}", length, ret);
+      return ret;
+    }
+    case Length::kCalculated: {
+      float ret = length.NonNanCalculatedValue(maximum_value, input);
+      ipid_depth_log.FPrint("在 {} 的空间中计算长度 {}，结果为 {}", maximum_value, length, ret);
+      return ret;
+    }
     case Length::kMinContent:
     case Length::kMaxContent:
     case Length::kMinIntrinsic:
@@ -67,17 +85,30 @@ float FloatValueForLength(const Length& length,
 LayoutUnit MinimumValueForLengthInternal(const Length& length,
                                          LayoutUnit maximum_value,
                                          const EvaluationInput& input) {
+  IpidDepthLog ipid_depth_log(
+      "length_functions.cc: MinimumValueForLengthInternal");
+
   switch (length.GetType()) {
-    case Length::kPercent:
+    case Length::kPercent: {
       // Don't remove the extra cast to float. It is needed for rounding on
       // 32-bit Intel machines that use the FPU stack.
-      return LayoutUnit(
+      LayoutUnit ret = LayoutUnit(
           static_cast<float>(maximum_value * length.Percent() / 100.0f));
-    case Length::kCalculated:
-      return LayoutUnit(length.NonNanCalculatedValue(maximum_value, input));
+
+      ipid_depth_log.FPrint("{} 的 {}% 为 {}", length, length.Percent(), ret);
+      return ret;
+    }
+    case Length::kCalculated: {
+      LayoutUnit ret =
+          LayoutUnit(length.NonNanCalculatedValue(maximum_value, input));
+      ipid_depth_log.FPrint("在 {} 的空间中计算长度 {}，结果为 {}",
+                            maximum_value, length, ret);
+      return ret;
+    }
     case Length::kFillAvailable:
     case Length::kStretch:
     case Length::kAuto:
+      ipid_depth_log.FPrint("{} 长度的计算结果为 0", length);
       return LayoutUnit();
     case Length::kFixed:
     case Length::kMinContent:
@@ -98,14 +129,23 @@ LayoutUnit MinimumValueForLengthInternal(const Length& length,
 LayoutUnit ValueForLength(const Length& length,
                           LayoutUnit maximum_value,
                           const EvaluationInput& input) {
+  IpidDepthLog ipid_depth_log("length_functions.cc: ValueForLength");
   switch (length.GetType()) {
     case Length::kFixed:
     case Length::kPercent:
     case Length::kCalculated:
+      ipid_depth_log.FPrint(
+          "{} 长度值的类型为 kFixed/kPercent/kCalculated，故需要调用 "
+          "MinimumValueForLength 计算",
+          length);
       return MinimumValueForLength(length, maximum_value, input);
     case Length::kFillAvailable:
     case Length::kStretch:
     case Length::kAuto:
+      ipid_depth_log.FPrint(
+          "{} 长度值的类型为 kFillAvailable/kStretch/kAuto，故直接返回最大值 "
+          "{}",
+          length, maximum_value);
       return maximum_value;
     case Length::kMinContent:
     case Length::kMaxContent:
