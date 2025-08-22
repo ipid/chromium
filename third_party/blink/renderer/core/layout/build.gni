@@ -46,6 +46,10 @@ blink_core_sources_layout = [
   "block_child_iterator.h",
   "block_layout_algorithm.cc",
   "block_layout_algorithm.h",
+  # ------ ipid logging START ------
+  "ipid_debug_layout_str_utils.cc",
+  "ipid_debug_layout_str_utils.h",
+  # ------ ipid logging END ------
   "block_layout_algorithm_utils.cc",
   "block_layout_algorithm_utils.h",
   "block_node.cc",
@@ -821,4 +825,7 @@ blink_core_tests_layout = [
   "table/table_layout_utils_test.cc",
   "text_autosizer_test.cc",
   "visual_rect_mapping_test.cc",
+  # ------ ipid logging START ------
+  "ipid_test.cc",
+  # ------ ipid logging END ------
 ]

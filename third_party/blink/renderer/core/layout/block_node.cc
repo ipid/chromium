@@ -89,6 +89,11 @@
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "ui/gfx/geometry/size_f.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 using mojom::blink::FormControlType;
@@ -157,34 +162,77 @@ NOINLINE void DetermineMathMLAlgorithmAndRun(
 template <typename Callback>
 NOINLINE void DetermineAlgorithmAndRun(const LayoutAlgorithmParams& params,
                                        const Callback& callback) {
+  IpidDepthLog ipid_depth_log("block_node.cc: DetermineAlgorithmAndRun");
+  std::string node_str = ipid::GetNodeStr(params.node);
+
   const LayoutBox& box = *params.node.GetLayoutBox();
   if (box.IsFlexibleBox()) {
+    ipid_depth_log.FPrint(
+        "{} 为 flex 容器，调用 FlexLayoutAlgorithm 来完成后续操作。", node_str);
     CreateAlgorithmAndRun<FlexLayoutAlgorithm>(params, callback);
   } else if (box.IsTable()) {
+    ipid_depth_log.FPrint(
+        "{} 为 table 容器，调用 TableLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<TableLayoutAlgorithm>(params, callback);
   } else if (box.IsTableRow()) {
+    ipid_depth_log.FPrint(
+        "{} 为 table-row 容器，调用 TableRowLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<TableRowLayoutAlgorithm>(params, callback);
   } else if (box.IsTableSection()) {
+    ipid_depth_log.FPrint(
+        "{} 为 table-section 容器，调用 TableSectionLayoutAlgorithm "
+        "来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<TableSectionLayoutAlgorithm>(params, callback);
   } else if (box.IsLayoutCustom()) {
+    ipid_depth_log.FPrint(
+        "{} 为自定义布局容器，调用 CustomLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<CustomLayoutAlgorithm>(params, callback);
   } else if (box.IsMathML()) {
+    ipid_depth_log.FPrint(
+        "{} 为 MathML 容器，调用相应的 MathML 布局算法来完成后续操作。",
+        node_str);
     DetermineMathMLAlgorithmAndRun(box, params, callback);
   } else if (box.IsLayoutGrid()) {
+    ipid_depth_log.FPrint(
+        "{} 为 grid 容器，调用 GridLayoutAlgorithm 来完成后续操作。", node_str);
     CreateAlgorithmAndRun<GridLayoutAlgorithm>(params, callback);
   } else if (box.IsLayoutMasonry()) {
+    ipid_depth_log.FPrint(
+        "{} 为 masonry 容器，调用 MasonryLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<MasonryLayoutAlgorithm>(params, callback);
   } else if (box.IsLayoutReplaced()) {
+    ipid_depth_log.FPrint(
+        "{} 为替换元素容器，调用 ReplacedLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<ReplacedLayoutAlgorithm>(params, callback);
   } else if (box.IsFieldset()) {
+    ipid_depth_log.FPrint(
+        "{} 为 fieldset 容器，调用 FieldsetLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<FieldsetLayoutAlgorithm>(params, callback);
   } else if (box.IsFrameSet()) {
+    ipid_depth_log.FPrint(
+        "{} 为 frameset 容器，调用 FrameSetLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<FrameSetLayoutAlgorithm>(params, callback);
   } else if (box.IsMulticolContainer()) {
+    ipid_depth_log.FPrint(
+        "{} 为多列容器，调用 ColumnLayoutAlgorithm 来完成后续操作。", node_str);
     CreateAlgorithmAndRun<ColumnLayoutAlgorithm>(params, callback);
   } else if (!box.Parent() && params.node.IsPaginatedRoot()) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "{} 为分页根容器，调用 PaginatedRootLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<PaginatedRootLayoutAlgorithm>(params, callback);
   } else {
+    ipid_depth_log.FPrint(
+        "{} 为普通 block 容器，调用 BlockLayoutAlgorithm 来完成后续操作。",
+        node_str);
     CreateAlgorithmAndRun<BlockLayoutAlgorithm>(params, callback);
   }
 }
@@ -398,6 +446,15 @@ const LayoutResult* BlockNode::Layout(
     const BlockBreakToken* break_token,
     const EarlyBreak* early_break,
     const ColumnSpannerPath* column_spanner_path) const {
+  IpidDepthLog ipid_depth_log("block_node.cc: BlockNode::Layout");
+
+  ipid_depth_log.FPrint("正在布局元素 {}。\n开辟的空间：{}",
+                        ipid::GetNodeStr(*this),
+                        ipid::GetConstraintSpaceString(constraint_space));
+  if (break_token) {
+    ipid_depth_log.FPrint("当前布局操作是分片布局的续篇，break_token 存在。");
+  }
+
   // The exclusion space internally is a pointer to a shared vector, and
   // equality of exclusion spaces is performed using pointer comparison on this
   // internal shared vector.
@@ -425,11 +482,17 @@ const LayoutResult* BlockNode::Layout(
       constraint_space, break_token, early_break, column_spanner_path,
       &fragment_geometry, &cache_status);
 
+  ipid_depth_log.FPrint("缓存检查结果：{}。",
+                        ipid::GetLayoutCacheStatusString(cache_status));
+
   if ((cache_status == LayoutCacheStatus::kHit ||
        cache_status == LayoutCacheStatus::kNeedsSimplifiedLayout) &&
       needed_layout &&
       constraint_space.CacheSlot() == LayoutResultCacheSlot::kLayout &&
       box_->HasBrokenSpine() && !ChildLayoutBlockedByDisplayLock()) {
+    ipid_depth_log.FPrint(
+        "由于子元素已经完成了布局，但当前元素的 fragment spine "
+        "被打断，需要克隆结果以获取最新的子元素 fragment。");
     // If we're not guaranteed to discard the old fragment (which we're only
     // guaranteed to do if we have decided to perform full layout), we need to
     // clone the result to pick the most recent fragments from the LayoutBox
@@ -451,6 +514,10 @@ const LayoutResult* BlockNode::Layout(
   if (cache_status == LayoutCacheStatus::kHit) {
     DCHECK(layout_result);
 
+    ipid_depth_log.FPrint(
+        "缓存命中！可以直接使用缓存的布局结果。但仍需更新 margin/padding "
+        "和 shape-outside 信息，因为这些可能因百分比变化而改变。");
+
     // We may have to update the margins on box_; we reuse the layout result
     // even if a percentage margin may have changed.
     UpdateMarginPaddingInfoIfNeeded(constraint_space,
@@ -462,17 +529,28 @@ const LayoutResult* BlockNode::Layout(
     // added or removed scrollbars during overflow recalculation, which may have
     // marked us for layout. In that case the cached result is unusable, and we
     // need to re-lay out now.
-    if (!box_->NeedsLayout())
+    if (!box_->NeedsLayout()) {
+      ipid_depth_log.FPrint(
+          "元素没有被标记为需要重新布局，直接返回缓存结果：{}。",
+          ipid::GetLayoutResultString(layout_result));
       return layout_result;
+    }
   }
 
   if (!fragment_geometry) {
+    ipid_depth_log.FPrint(
+        "需要计算 FragmentGeometry（元素的初始几何信息）。这包括元素的 "
+        "border-box 尺寸、border、scrollbar 和 padding 的值。");
     fragment_geometry =
         CalculateInitialFragmentGeometry(constraint_space, *this, break_token);
+    ipid_depth_log.FPrint("计算得到的元素几何信息：{}",
+                          ipid::GetFragmentGeometryString(*fragment_geometry));
   }
 
   // Only consider the size of the first container fragment.
   if (!IsBreakInside(break_token) && CanMatchSizeContainerQueries()) {
+    ipid_depth_log.FPrint(
+        "当前元素支持容器查询，需要更新样式和布局树以匹配容器尺寸。");
     if (auto* element = DynamicTo<Element>(GetDOMNode())) {
       // Consider scrollbars if they are stable (reset any auto scrollbars).
       BoxStrut scrollbar = fragment_geometry->scrollbar;
@@ -492,6 +570,11 @@ const LayoutResult* BlockNode::Layout(
       const LogicalSize available_size = CalculateChildAvailableSize(
           constraint_space, *this, fragment_geometry->border_box_size,
           fragment_geometry->border + scrollbar + fragment_geometry->padding);
+
+      ipid_depth_log.FPrint(
+          "为容器查询计算的可用尺寸：{}。将更新样式和布局树。",
+          ipid::GetLogicalSizeString(available_size));
+
       GetDocument().GetStyleEngine().UpdateStyleAndLayoutTreeForSizeContainer(
           *element, available_size, ContainedAxes());
 
@@ -501,6 +584,9 @@ const LayoutResult* BlockNode::Layout(
       layout_result = box_->CachedLayoutResult(
           constraint_space, break_token, early_break, column_spanner_path,
           &fragment_geometry, &cache_status);
+
+      ipid_depth_log.FPrint("容器查询处理后重新检查缓存，结果：{}。",
+                            ipid::GetLayoutCacheStatusString(cache_status));
     }
   }
 
@@ -508,6 +594,10 @@ const LayoutResult* BlockNode::Layout(
       box_, fragment_geometry->border_box_size.inline_size);
 
   PrepareForLayout();
+
+  ipid_depth_log.FPrint(
+      "开始准备布局参数。元素的 border-box 尺寸：{}。",
+      ipid::GetLogicalSizeString(fragment_geometry->border_box_size));
 
   LayoutAlgorithmParams params(*this, *fragment_geometry, constraint_space,
                                break_token, early_break);
@@ -520,6 +610,11 @@ const LayoutResult* BlockNode::Layout(
   if (cache_status == LayoutCacheStatus::kNeedsSimplifiedLayout &&
       (!block_flow || !block_flow->IsFragmentationContextRoot())) {
     DCHECK(layout_result);
+
+    ipid_depth_log.FPrint(
+        "缓存状态为 kNeedsSimplifiedLayout，将尝试使用简化布局算法。"
+        "简化布局只更新子元素的位置，不重新计算尺寸，更高效。");
+
 #if DCHECK_IS_ON()
     const LayoutResult* previous_result = layout_result;
 #endif
@@ -530,15 +625,26 @@ const LayoutResult* BlockNode::Layout(
     // we need to perform a full layout.
     layout_result = RunSimplifiedLayout(params, *layout_result);
 
+    if (layout_result) {
+      ipid_depth_log.FPrint("简化布局成功，得到结果：{}。",
+                            ipid::GetLayoutResultString(layout_result));
+    } else {
+      ipid_depth_log.FPrint(
+          "简化布局失败（可能因子元素尺寸发生变化），需要进行完整布局。");
+    }
+
 #if DCHECK_IS_ON()
     if (layout_result) {
       layout_result->CheckSameForSimplifiedLayout(*previous_result);
     }
 #endif
   } else if (cache_status == LayoutCacheStatus::kCanReuseLines) {
+    ipid_depth_log.FPrint(
+        "缓存状态为 kCanReuseLines，可以复用行盒信息。这适用于文本布局优化。");
     params.previous_result = layout_result;
     layout_result = nullptr;
   } else {
+    ipid_depth_log.FPrint("无法使用缓存或简化布局，将执行完整的布局计算。");
     layout_result = nullptr;
   }
 
@@ -549,8 +655,20 @@ const LayoutResult* BlockNode::Layout(
   const bool intrinsic_logical_widths_dirty_before =
       box_->IntrinsicLogicalWidthsDirty();
 
-  if (!layout_result)
+  ipid_depth_log.FPrint(
+      "布局前的状态：\n"
+      "  滚动条：{}\n"
+      "  元素宽度：{}\n"
+      "  固有宽度是否过期：{}",
+      ipid::GetBoxStrutString(scrollbars_before), inline_size_before,
+      ipid::btos(intrinsic_logical_widths_dirty_before));
+
+  if (!layout_result) {
+    ipid_depth_log.FPrint("开始执行完整的布局计算。");
     layout_result = LayoutWithAlgorithm(params);
+    ipid_depth_log.FPrint("布局计算完成，结果：{}。",
+                          ipid::GetLayoutResultString(layout_result));
+  }
 
   // PaintLayerScrollableArea::UpdateAfterLayout() may remove the vertical
   // scrollbar. In vertical-rl or RTL, the vertical scrollbar is on the
@@ -565,6 +683,7 @@ const LayoutResult* BlockNode::Layout(
     optional_old_box_size = box_->StitchedSize();
   }
 
+  ipid_depth_log.FPrint("开始完成布局的后续处理（FinishLayout）。");
   FinishLayout(block_flow, constraint_space, break_token, layout_result,
                optional_old_box_size);
 
@@ -572,8 +691,13 @@ const LayoutResult* BlockNode::Layout(
   // widths are now dirty, re-calculate our inline-size for comparison.
   if (!intrinsic_logical_widths_dirty_before &&
       box_->IntrinsicLogicalWidthsDirty()) {
+    ipid_depth_log.FPrint(
+        "布局后元素的固有宽度被标记为过期，可能是 shrink-to-fit "
+        "尺寸变化，需要重新计算 FragmentGeometry。");
     fragment_geometry =
         CalculateInitialFragmentGeometry(constraint_space, *this, break_token);
+    ipid_depth_log.FPrint("重新计算的元素几何信息：{}",
+                          ipid::GetFragmentGeometryString(*fragment_geometry));
   }
 
   // We may need to relayout if:
@@ -585,17 +709,39 @@ const LayoutResult* BlockNode::Layout(
   // are resuming layout after a fragmentainer break. Changing the intrinsic
   // inline-size halfway through layout of a node doesn't make sense.
   BoxStrut scrollbars_after = ComputeScrollbars(constraint_space, *this);
+
+  ipid_depth_log.FPrint(
+      "滚动条检查：\n"
+      "  布局前：{}\n"
+      "  布局后：{}",
+      ipid::GetBoxStrutString(scrollbars_before),
+      ipid::GetBoxStrutString(scrollbars_after));
+
   if ((scrollbars_before != scrollbars_after ||
        inline_size_before != fragment_geometry->border_box_size.inline_size) &&
       !DisableLayoutSideEffectsScope::IsDisabled() &&
       !IsBreakInside(break_token)) {
+    bool size_changed =
+        inline_size_before != fragment_geometry->border_box_size.inline_size;
+    ipid_depth_log.FPrint(
+        "检测到变化：{}{}\n将进入滚动条稳定化循环，直到滚动条状态不再变化。",
+        scrollbars_before != scrollbars_after ? "滚动条变化" : "",
+        size_changed ? "元素尺寸变化" : "");
+
     bool freeze_horizontal = false, freeze_vertical = false;
     // If we're in a measure pass, freeze both scrollbars right away, to avoid
     // quadratic time complexity for deeply nested flexboxes.
     if (constraint_space.CacheSlot() == LayoutResultCacheSlot::kMeasure) {
       freeze_horizontal = freeze_vertical = true;
+      ipid_depth_log.FPrint(
+          "当前为 measure 阶段，直接冻结所有滚动条以避免二次复杂度。");
     }
+
+    int loop_count = 0;
     do {
+      loop_count++;
+      ipid_depth_log.FPrint("第 {} 轮滚动条稳定化循环。", loop_count);
+
       // Freeze any scrollbars that appeared, and relayout. Repeat until both
       // have appeared, or until the scrollbar situation doesn't change,
       // whichever comes first.
@@ -627,6 +773,7 @@ const LayoutResult* BlockNode::Layout(
       box_->SetNeedsLayout(layout_invalidation_reason::kScrollbarChanged,
                            kMarkOnlyThis);
 
+      ipid_depth_log.FPrint("清空缓存并重新计算布局。");
       fragment_geometry = CalculateInitialFragmentGeometry(constraint_space,
                                                            *this, break_token);
       layout_result = LayoutWithAlgorithm(params);
@@ -638,9 +785,13 @@ const LayoutResult* BlockNode::Layout(
 #endif
 
       scrollbars_after = ComputeScrollbars(constraint_space, *this);
+      ipid_depth_log.FPrint("重新布局后的滚动条：{}",
+                            ipid::GetBoxStrutString(scrollbars_after));
       DCHECK(!freeze_horizontal || !freeze_vertical ||
              scrollbars_after == scrollbars_before);
     } while (scrollbars_after != scrollbars_before);
+
+    ipid_depth_log.FPrint("滚动条稳定化完成，共进行 {} 轮。", loop_count);
   }
 
   // We always need to update the ShapeOutsideInfo even if the layout is
@@ -654,6 +805,10 @@ const LayoutResult* BlockNode::Layout(
   // TODO(ikilpatrick): This should be fixed by moving the shape-outside data
   // to the LayoutResult, removing this "side" data-structure.
   UpdateShapeOutsideInfoIfNeeded(*layout_result, constraint_space);
+
+  ipid_depth_log.FPrint("元素 {} 的布局完成！\n最终的布局结果：{}",
+                        ipid::GetNodeStr(*this),
+                        ipid::GetLayoutResultString(layout_result));
 
   return layout_result;
 }
@@ -934,6 +1089,13 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     const SizeType type,
     const ConstraintSpace& constraint_space,
     const MinMaxSizesFloatInput float_input) const {
+  IpidDepthLog ipid_depth_log("BlockNode::ComputeMinMaxSizes");
+
+  ipid_depth_log.FPrint(
+      "正在计算元素 {} 的固有宽度。\n开辟的空间：{}\nSizeType: {}",
+      ipid::GetNodeStr(*this), ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetSizeTypeString(type));
+
   // TODO(layoutng) Can UpdateMarkerTextIfNeeded call be moved
   // somewhere else? List items need up-to-date markers before layout.
   if (IsListItem())
@@ -953,6 +1115,9 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   };
 
   const bool is_in_perform_layout = box_->GetFrameView()->IsInPerformLayout();
+  ipid_depth_log.FPrint("当前是否在布局过程中：{}",
+                        ipid::btos(is_in_perform_layout));
+
   // In some scenarios, Grid, Masonry and Flex will run layout on their items
   // during MinMaxSizes computation. Instead of running (and possible caching
   // incorrect results), when we're not performing layout, just use border +
@@ -966,6 +1131,15 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     MinMaxSizes sizes;
     sizes.min_size = border_padding.InlineSum();
     sizes.max_size = sizes.min_size;
+    ipid_depth_log.FPrint(
+        "[特殊逻辑] 在 display: grid | flex | masonry "
+        "布局算法的实现中，会在计算固有宽度（即 ComputeMinMaxSizes）阶段就调用 "
+        "Layout；但是当前并不在布局过程中，如果它们调了 Layout，那 blink "
+        "内部会出 bug，为了防止这些算法的 ComputeMinMaxSizes 调用 Layout "
+        "从而导致 bug，于是干脆不调用它们的 ComputeMinMaxSizes，直接返回 "
+        "border + padding 的值作为固有宽度计算结果。\n"
+        "最终结果：{}",
+        sizes);
     return MinMaxSizesResult(sizes, /* depends_on_block_constraints */ false);
   }
 
@@ -974,6 +1148,11 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
 
   // If we're orthogonal, run layout to compute the sizes.
   if (is_orthogonal_flow_root) {
+    ipid_depth_log.FPrint(
+        "当前元素 {} 为正交的 BFC "
+        "根元素（书写模式与容器不平行），需要通过完整布局来计算固有宽度。",
+        ipid::GetNodeStr(*this));
+
     // If we have an aspect ratio, we may be able to avoid laying out the
     // child as an optimization, if performance testing shows this to be
     // important.
@@ -985,11 +1164,17 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     // so that |Layout| does not update the |LayoutObject| tree and other global
     // states.
     std::optional<DisableLayoutSideEffectsScope> disable_side_effects;
-    if (!GetLayoutBox()->NeedsLayout())
+    if (!GetLayoutBox()->NeedsLayout()) {
+      ipid_depth_log.FPrint(
+          "元素不需要布局，启用 DisableLayoutSideEffectsScope 来避免副作用。");
       disable_side_effects.emplace();
+    }
 
     const LayoutResult* layout_result = Layout(constraint_space);
     DCHECK_EQ(layout_result->Status(), LayoutResult::kSuccess);
+    ipid_depth_log.FPrint(
+        "正交的 BFC 根元素完成布局，开始从布局结果中提取固有宽度。");
+
     sizes = LogicalFragment({container_writing_mode, TextDirection::kLtr},
                             layout_result->GetPhysicalFragment())
                 .InlineSize();
@@ -998,6 +1183,8 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
         Style().LogicalWidth().HasPercentOrStretch() ||
         Style().LogicalMinWidth().HasPercentOrStretch() ||
         Style().LogicalMaxWidth().HasPercentOrStretch();
+
+    ipid_depth_log.FPrint("最终的固有宽度计算结果为：{}。", sizes);
     return MinMaxSizesResult(sizes, depends_on_block_constraints);
   }
 
@@ -1014,9 +1201,16 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   // as most layouts are interested in the min/max content contribution which
   // calls `ComputeReplacedSize` directly. This is mainly used by flex.
   if (IsReplaced()) {
+    ipid_depth_log.FPrint(
+        "{} 为替换元素，直接调用 CalculateInitialFragmentGeometry "
+        "来完成后续操作。",
+        ipid::GetNodeStr(*this));
     MinMaxSizes sizes;
     sizes = IntrinsicFragmentGeometry().border_box_size.inline_size;
-    return {sizes, DependsOnBlockConstraints()};
+    MinMaxSizesResult ret{sizes, DependsOnBlockConstraints()};
+    ipid_depth_log.FPrint("替换元素 {} 的固有宽度计算结果为：{}",
+                          ipid::GetNodeStr(*this), ret.sizes);
+    return ret;
   }
 
   const bool has_aspect_ratio = !Style().AspectRatio().IsAuto();
@@ -1025,10 +1219,20 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     const BoxStrut border_padding =
         fragment_geometry.border + fragment_geometry.padding;
     if (fragment_geometry.border_box_size.block_size != kIndefiniteSize) {
+      ipid_depth_log.FPrint(
+          "当前元素 {} 有 aspect-ratio，且 SizeType 为 "
+          "kContent（表示上游想在计算固有宽度时，考虑 aspect-ratio "
+          "的影响），且高度为 {}，是个明确值，故调用 InlineSizeFromAspectRatio "
+          "从 aspect-ratio 中得到固有宽度。",
+          ipid::GetNodeStr(*this),
+          fragment_geometry.border_box_size.block_size);
       const LayoutUnit inline_size_from_ar = InlineSizeFromAspectRatio(
           border_padding, Style().LogicalAspectRatio(),
           Style().BoxSizingForAspectRatio(),
           fragment_geometry.border_box_size.block_size);
+      ipid_depth_log.FPrint(
+          "从 aspect-ratio 中得到的元素 {} 的固有宽度为 ({}, {})。",
+          ipid::GetNodeStr(*this), inline_size_from_ar, inline_size_from_ar);
       return MinMaxSizesResult({inline_size_from_ar, inline_size_from_ar},
                                DependsOnBlockConstraints(),
                                /* applied_aspect_ratio */ true);
@@ -1038,8 +1242,12 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   bool can_use_cached_intrinsic_inline_sizes =
       CanUseCachedIntrinsicInlineSizes(constraint_space, float_input, *this);
 
+  ipid_depth_log.FPrint("检查是否可以使用缓存的固有宽度：{}",
+                        ipid::btos(can_use_cached_intrinsic_inline_sizes));
+
   // Ensure the cache is invalid if we know we can't use our cached sizes.
   if (!can_use_cached_intrinsic_inline_sizes) {
+    ipid_depth_log.FPrint("无法使用缓存，将固有宽度标记为过期。");
     box_->SetIntrinsicLogicalWidthsDirty(kMarkOnlyThis);
   }
 
@@ -1050,6 +1258,10 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   if (can_use_cached_intrinsic_inline_sizes &&
       !box_->IntrinsicLogicalWidthsDependsOnBlockConstraints()) {
     result = box_->CachedIndefiniteIntrinsicLogicalWidths();
+    if (result.has_value()) {
+      ipid_depth_log.FPrint("使用了无限制情况下缓存的固有宽度结果：{}。",
+                            result.value().sizes);
+    }
   }
 
   // We might still be able to use the cached values for a specific initial
@@ -1058,24 +1270,41 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
       !UseParentPercentageResolutionBlockSizeForChildren()) {
     result = box_->CachedIntrinsicLogicalWidths(
         IntrinsicFragmentGeometry().border_box_size.block_size);
+    if (result.has_value()) {
+      ipid_depth_log.FPrint("使用了特定块尺寸下缓存的固有宽度结果：{}。",
+                            result.value().sizes);
+    }
   }
 
   if (!result) {
+    ipid_depth_log.FPrint(
+        "缓存中未找到固有宽度结果，故调用 ComputeMinMaxSizesWithAlgorithm "
+        "用各个布局算法的逻辑进行计算。");
     const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
     result = ComputeMinMaxSizesWithAlgorithm(
         LayoutAlgorithmParams(*this, fragment_geometry, constraint_space),
         float_input);
+    ipid_depth_log.FPrint("布局算法返回的固有宽度结果为：{}。",
+                          result.value().sizes);
 
     const BoxStrut border_padding =
         fragment_geometry.border + fragment_geometry.padding;
     if (auto min_size = ContentMinimumInlineSize(*this, border_padding)) {
-      result->sizes.min_size = *min_size;
+      if (min_size && *min_size != result->sizes.min_size) {
+        ipid_depth_log.FPrint(
+            "算法得到的固有最小宽度值 {} 被 ContentMinimumInlineSize 的返回值 "
+            "{} 覆盖。这通常发生在百分比宽度元素上。",
+            result->sizes.min_size, *min_size);
+        result->sizes.min_size = *min_size;
+      }
     }
 
     // Update the cache with this intermediate value.
+    ipid_depth_log.FPrint("将计算结果缓存到 LayoutBox 中。");
     box_->SetIntrinsicLogicalWidths(
         fragment_geometry.border_box_size.block_size, *result);
     if (IsTableCell()) {
+      ipid_depth_log.FPrint("表格单元格特殊处理：缓存边框尺寸信息。");
       To<LayoutTableCell>(box_.Get())
           ->SetIntrinsicLogicalWidthsBorderSizes(
               constraint_space.TableCellBorders());
@@ -1085,17 +1314,41 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   if (has_aspect_ratio) {
     const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
     if (fragment_geometry.border_box_size.block_size == kIndefiniteSize) {
+      ipid_depth_log.FPrint(
+          "当前元素 {} 有 aspect-ratio 且块尺寸未定义，需要考虑 max-block-size "
+          "的约束。",
+          ipid::GetNodeStr(*this));
+
       // If the block size will be computed from the aspect ratio, we need
       // to take the max-block-size into account.
       // https://drafts.csswg.org/css-sizing-4/#aspect-ratio
       const BoxStrut border_padding =
           fragment_geometry.border + fragment_geometry.padding;
+      ipid_depth_log.FPrint(
+          "当前元素 {} 有 aspect-ratio，将调用 "
+          "ComputeMinMaxInlineSizesFromAspectRatio，然后 clamp "
+          "当前的固有宽度计算结果 {}。",
+          ipid::GetNodeStr(*this), result->sizes);
       const MinMaxSizes min_max = ComputeMinMaxInlineSizesFromAspectRatio(
           constraint_space, *this, border_padding);
+
+      LayoutUnit old_min = result->sizes.min_size;
+      LayoutUnit old_max = result->sizes.max_size;
       result->sizes.min_size =
           min_max.ClampSizeToMinAndMax(result->sizes.min_size);
       result->sizes.max_size =
           min_max.ClampSizeToMinAndMax(result->sizes.max_size);
+
+      ipid_depth_log.FPrint(
+          "ComputeMinMaxInlineSizesFromAspectRatio 返回的约束范围：{}\n"
+          "Clamp 前的固有宽度：({}, {})\n"
+          "Clamp 后的固有宽度：{}",
+          min_max, old_min, old_max, result->sizes);
+    } else {
+      ipid_depth_log.FPrint(
+          "当前元素 {} 有 aspect-ratio 但块尺寸已确定为 {}，无需额外处理。",
+          ipid::GetNodeStr(*this),
+          fragment_geometry.border_box_size.block_size);
     }
   }
 
@@ -1106,6 +1359,8 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
       (DependsOnBlockConstraints() ||
        UseParentPercentageResolutionBlockSizeForChildren()) &&
       (result->depends_on_block_constraints || has_aspect_ratio);
+
+  ipid_depth_log.FPrint("最终的固有宽度计算结果为：{}。", result->sizes);
   return *result;
 }
 

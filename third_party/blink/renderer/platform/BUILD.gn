@@ -1470,6 +1470,9 @@ component("platform") {
     "peerconnection/webrtc_video_track_source.h",
     "privacy_budget/identifiability_digest_helpers.cc",
     "privacy_budget/identifiability_digest_helpers.h",
+    # ------ ipid logging START ------
+    "ipid_logging/ipid_depth_logging.cc",
+    # ------ ipid logging END ------
     "region_capture_crop_id.cc",
     "region_capture_crop_id.h",
     "resolution_units.h",

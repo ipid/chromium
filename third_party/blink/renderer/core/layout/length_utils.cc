@@ -23,6 +23,11 @@
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 LayoutUnit ResolveInlineLengthInternal(
@@ -36,21 +41,68 @@ LayoutUnit ResolveInlineLengthInternal(
     FitContentMode fit_content_mode,
     LayoutUnit override_available_size,
     CalcSizeKeywordBehavior calc_size_keyword_behavior) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ResolveInlineLengthInternal");
+
   DCHECK_EQ(constraint_space.GetWritingMode(), style.GetWritingMode());
+
+  ipid_depth_log.FPrint(
+      "正在解析宽度 {}，\n开辟的空间：{}\n上游需要解析哪种宽度：{}\n当前元素的 "
+      "border+padding：{}",
+      original_length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetLengthTypeInternalString(length_type),
+      ipid::GetBoxStrutString(border_padding));
 
   // For min-inline-size, this might still be 'auto'.
   const Length& length =
       original_length.IsAuto() && auto_length ? *auto_length : original_length;
+
+  if (original_length.IsAuto() && length.IsAuto()) {
+    ipid_depth_log.FPrint(
+        "当前要解析的宽度为 auto，但上游没有传 "
+        "auto_length（可以理解为一个兜底值，当宽度为 auto "
+        "时兜底为此值），因此后续将直接对 "
+        "auto 值作解析。");
+  } else if (original_length.IsAuto() && !length.IsAuto()) {
+    ipid_depth_log.FPrint(
+        "当前要解析的宽度为 auto，但上游传入了 auto_length = "
+        "{}（可以理解为一个兜底值，当宽度为 auto "
+        "时兜底为此值），因此后续要解析的宽度值变为 {}。",
+        length, length);
+  }
+  if (length.HasFitContent()) {
+    ipid_depth_log.FPrint("当前的 fit_content_mode: {}",
+                          ipid::GetFitContentModeString(fit_content_mode));
+  }
+  if (length.IsCalculated()) {
+    ipid_depth_log.FPrint(
+        "当前若 calc 中出现 size 关键字，行为为: {}",
+        ipid::GetCalcSizeKeywordBehaviorString(calc_size_keyword_behavior));
+  }
+
   switch (length.GetType()) {
     case Length::kStretch: {
       const LayoutUnit available_size =
           override_available_size == kIndefiniteSize
               ? constraint_space.AvailableSize().inline_size
               : override_available_size;
+      ipid_depth_log.FPrint("Length 为 {}，因此首先需获取当前的可用空间。",
+                            ipid::GetLengthTypeString(length.GetType()));
+      if (override_available_size != kIndefiniteSize) {
+        ipid_depth_log.FPrint(
+            "上游从从函数参数中传入了 override_available_size: "
+            "{}，因此可用空间为该值。",
+            override_available_size);
+      } else {
+        ipid_depth_log.FPrint(
+            "可用空间由开辟的 ConstraintSpace 决定，从中取出的可用空间为 {}。",
+            available_size);
+      }
       if (available_size == kIndefiniteSize) {
+        ipid_depth_log.FPrint("可用空间为 -1，因此解析结果也为 -1 (kIndefiniteSize)。return kIndefiniteSize");
         return kIndefiniteSize;
       }
       DCHECK_GE(available_size, LayoutUnit());
+      ipid_depth_log.FPrint("正在计算当前节点的 margin 值。");
       const BoxStrut margins = ComputeMarginsForSelf(constraint_space, style);
       const LogicalBoxSides& ignore_margin_sides =
           constraint_space.IgnoreMarginsForStretch();
@@ -67,18 +119,38 @@ LayoutUnit ResolveInlineLengthInternal(
     case Length::kCalculated: {
       LayoutUnit percentage_resolution_size =
           constraint_space.PercentageResolutionInlineSize();
+      ipid_depth_log.FPrint("当前空间的宽度为 {}。", length,
+                            percentage_resolution_size);
       if (length.HasPercent() &&
           percentage_resolution_size == kIndefiniteSize) {
         if (length_type != LengthTypeInternal::kMin) {
+          ipid_depth_log.FPrint(
+              "宽度的 internal type 为 {}，不是 kMin，因此宽度 {} "
+              "的解析结果为 (-1)。",
+              ipid::GetLengthTypeInternalString(length_type), length);
           return kIndefiniteSize;
         }
+        ipid_depth_log.FPrint(
+          "虽然当前空间的宽度为不确定值（-1），但宽度的 internal "
+          "type 为 kMin，因此假设当前空间的宽度为 "
+          "0（而不是不明确的值），继续接下来的解析逻辑。");
         percentage_resolution_size = LayoutUnit();
       }
       bool evaluated_indefinite = false;
+
       LayoutUnit value = MinimumValueForLength(
           length, percentage_resolution_size,
           {.intrinsic_evaluator =
                [&](const Length& length_to_evaluate) {
+                 IpidDepthLog ipid_depth_log(
+                     "length_utils.cc: ResolveInlineLengthInternal 传给 "
+                     "MinimumValueForLength 的闭包: intrinsic_evaluator");
+
+                 ipid_depth_log.FPrint(
+                     "递归解析宽度：为了最终解析宽度 {}，现在我们递归调用 "
+                     "ResolveInlineLengthInternal 来解析宽度 {} 的值。",
+                     length, length_to_evaluate);
+
                  LayoutUnit result = ResolveInlineLengthInternal(
                      constraint_space, style, border_padding,
                      min_max_sizes_func, length_to_evaluate, auto_length,
@@ -86,71 +158,233 @@ LayoutUnit ResolveInlineLengthInternal(
                      calc_size_keyword_behavior);
                  if (result == kIndefiniteSize) {
                    evaluated_indefinite = true;
+                   ipid_depth_log.FPrint("宽度 {} 的解析结果为不明确值 (-1)。",
+                                         length);
                    return kIndefiniteSize;
                  }
                  if (style.BoxSizing() == EBoxSizing::kContentBox) {
+                   if (border_padding.InlineSum() > LayoutUnit()) {
+                     ipid_depth_log.FPrint(
+                         "宽度 {} 的解析结果为 {}，但是由于当前元素为 "
+                         "box-sizing: content-box，我们需要减去 border + "
+                         "padding 的横向值 {}px。",
+                         length, result, border_padding.InlineSum());
+                   }
                    result -= border_padding.InlineSum();
                  }
                  DCHECK_GE(result, LayoutUnit());
+
+                 ipid_depth_log.FPrint("宽度 {} 的最终解析结果为 {}。", length,
+                                       result);
                  return result;
                },
            .calc_size_keyword_behavior = calc_size_keyword_behavior});
 
       if (evaluated_indefinite) {
+        ipid_depth_log.FPrint(
+            "上面进行了「递归解析宽度」，其中得到了不明确值 "
+            "(-1)，因此宽度 {} 的最终解析结果也为不明确值 (-1)。",
+            length);
         return kIndefiniteSize;
       }
 
-      if (style.BoxSizing() == EBoxSizing::kBorderBox)
+      if (style.BoxSizing() == EBoxSizing::kBorderBox) {
+        ipid_depth_log.FPrint(
+            "当前元素的 box-sizing 为 border-box，因此最终结果为 {} 和 "
+            "border+padding 横向值 {} 的较大值。",
+            value, border_padding.InlineSum());
         value = std::max(border_padding.InlineSum(), value);
-      else
+      } else {
+        ipid_depth_log.FPrint(
+            "当前元素的 box-sizing 为 content-box，因此最终结果为 {} 加上 "
+            "border+padding 横向值 {}。",
+            value, border_padding.InlineSum());
         value += border_padding.InlineSum();
+      }
+
+      ipid_depth_log.FPrint("宽度 {} 的最终解析结果为 {}。", length, value);
       return value;
     }
     case Length::kContent:
-    case Length::kMaxContent:
-      return min_max_sizes_func(SizeType::kContent).sizes.max_size;
-    case Length::kMinContent:
-      return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-    case Length::kMinIntrinsic:
-      return min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size;
+    case Length::kMaxContent: {
+      ipid_depth_log.FPrint(
+          "要解析宽度 {}，就需要算出该元素的固有最大宽度。接下来调用 "
+          "min_max_sizes_func(SizeType::kContent) 进行计算。",
+          length);
+      MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+      LayoutUnit ret = sizes.max_size;
+      ipid_depth_log.FPrint(
+          "固有宽度计算结果为 {}，取其中的固有最大宽度值 {} 作为最终解析结果。",
+          sizes, ret);
+      return ret;
+    }
+    case Length::kMinContent: {
+      ipid_depth_log.FPrint(
+          "要解析宽度 {}，就需要算出该元素的固有最小宽度。接下来调用 "
+          "min_max_sizes_func(SizeType::kContent) 进行计算。",
+          length);
+      MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+      LayoutUnit ret = sizes.min_size;
+      ipid_depth_log.FPrint(
+          "固有宽度计算结果为 {}，取其中的固有最小宽度值 {} 作为最终解析结果。",
+          ipid::GetMinMaxSizesString(sizes), ret);
+      return ret;
+    }
+    case Length::kMinIntrinsic: {
+      ipid_depth_log.FPrint(
+          "要解析宽度 {}，就需要算出该元素的固有最小宽度，并且忽略 "
+          "aspect-ratio 的影响。接下来调用 "
+          "min_max_sizes_func(SizeType::kIntrinsic) 进行计算。",
+          length);
+      MinMaxSizes sizes = min_max_sizes_func(SizeType::kIntrinsic).sizes;
+      LayoutUnit ret = sizes.min_size;
+      ipid_depth_log.FPrint(
+          "固有宽度（排除 aspect-ratio 影响）计算结果为 "
+          "{}，取其中的固有最小宽度值 {} 作为最终解析结果。",
+          ipid::GetMinMaxSizesString(sizes), ret);
+      return ret;
+    }
     case Length::kFitContent: {
       const LayoutUnit available_size =
           override_available_size == kIndefiniteSize
               ? constraint_space.AvailableSize().inline_size
               : override_available_size;
 
+      ipid_depth_log.FPrint(
+          "要解析 fit-content "
+          "的宽度，则既需要知道元素的固有宽度，又需要知道当前被开辟的空间的宽度"
+          "。");
+      if (override_available_size == kIndefiniteSize) {
+        ipid_depth_log.FPrint(
+            "当前被开辟的空间的宽度为 {}，因此可用宽度为该值。",
+            available_size);
+      } else {
+        ipid_depth_log.FPrint(
+            "当前函数传入了 override_available_size = {}，因此可用宽度为该值。",
+            available_size);
+      }
+
       // fit-content resolves differently depending on the type of length.
       if (available_size == kIndefiniteSize) {
         switch (fit_content_mode) {
           case FitContentMode::kNormal:
             switch (length_type) {
-              case LengthTypeInternal::kMin:
-                return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-              case LengthTypeInternal::kMain:
+              case LengthTypeInternal::kMin: {
+                ipid_depth_log.FPrint(
+                    "当前的可用宽度为 -1（不明确值），且当前是在正常地解析 "
+                    "fit-content、是从 ResolveMinInlineLength "
+                    "中调用本函数。这种情况下，取固有最小宽度作为 fit-content "
+                    "的解析结果。");
+                MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+                LayoutUnit ret = sizes.min_size;
+                ipid_depth_log.FPrint(
+                    "固有宽度计算结果为 {}，取其中的固有最小宽度值 {} "
+                    "作为最终解析结果。",
+                    ipid::GetMinMaxSizesString(sizes), ret);
+                return ret;
+              }
+              case LengthTypeInternal::kMain: {
+                ipid_depth_log.FPrint(
+                    "当前的可用宽度为 -1（不明确值），且当前是在正常地解析 "
+                    "fit-content、是从 ResolveMainInlineLength "
+                    "中调用本函数。这种情况下，fit-content "
+                    "也只能解析出不明确值 -1。");
                 return kIndefiniteSize;
-              case LengthTypeInternal::kMax:
-                return min_max_sizes_func(SizeType::kContent).sizes.max_size;
+              }
+              case LengthTypeInternal::kMax: {
+                ipid_depth_log.FPrint(
+                    "当前的可用宽度为 -1（不明确值），且当前是在正常地解析 "
+                    "fit-content、是从 ResolveMaxInlineLength "
+                    "中调用本函数。这种情况下，取固有最大宽度作为 fit-content "
+                    "的解析结果。");
+                MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+                LayoutUnit ret = sizes.max_size;
+                ipid_depth_log.FPrint(
+                    "固有宽度计算结果为 {}，取其中的固有最大宽度值 {} "
+                    "作为最终解析结果。",
+                    ipid::GetMinMaxSizesString(sizes), ret);
+                return ret;
+              }
             }
-          case FitContentMode::kMinContribution:
-            return min_max_sizes_func(SizeType::kContent).sizes.min_size;
-          case FitContentMode::kMaxContribution:
-            return min_max_sizes_func(SizeType::kContent).sizes.max_size;
+          case FitContentMode::kMinContribution: {
+            ipid_depth_log.FPrint(
+                "当前的可用宽度为 "
+                "-1（不明确值），且当前是在计算一个元素对其父元素的固有最小宽度"
+                "的贡献值。这种情况下，取固有最小宽度作为 fit-content "
+                "的解析结果。");
+            MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+            LayoutUnit ret = sizes.min_size;
+            ipid_depth_log.FPrint(
+                "固有宽度计算结果为 {}，取其中的固有最小宽度值 {} "
+                "作为最终解析结果。",
+                ipid::GetMinMaxSizesString(sizes), ret);
+            return ret;
+          }
+          case FitContentMode::kMaxContribution: {
+            ipid_depth_log.FPrint(
+                "当前的可用宽度为 "
+                "-1（不明确值），且当前是在计算一个元素对其父元素的固有最大宽度"
+                "的贡献值。这种情况下，取固有最大宽度作为 fit-content "
+                "的解析结果。");
+            MinMaxSizes sizes = min_max_sizes_func(SizeType::kContent).sizes;
+            LayoutUnit ret = sizes.max_size;
+            ipid_depth_log.FPrint(
+                "固有宽度计算结果为 {}，取其中的固有最大宽度值 {} "
+                "作为最终解析结果。",
+                ipid::GetMinMaxSizesString(sizes), ret);
+            return ret;
+          }
         }
       }
       DCHECK_GE(available_size, LayoutUnit());
 
+      ipid_depth_log.FPrint("正在计算当前节点的 margin 值。");
       const BoxStrut margins = ComputeMarginsForSelf(constraint_space, style);
-      return min_max_sizes_func(SizeType::kContent)
-          .sizes.ShrinkToFit(
-              (available_size - margins.InlineSum()).ClampNegativeToZero());
+      ipid_depth_log.FPrint("计算得到的值为 margin: {}。",
+                            ipid::GetBoxStrutString(margins));
+
+      ipid_depth_log.FPrint(
+          "当前的可用空间（{}"
+          "px）是明确的，因此只要再计算元素的固有宽度，即可获取 fit-content "
+          "的解析结果。\n接下来计算元素的固有宽度。",
+          available_size);
+      MinMaxSizes min_max_func_returned =
+          min_max_sizes_func(SizeType::kContent).sizes;
+      ipid_depth_log.FPrint(
+          "元素固有宽度的计算结果为 {}，我们需要从中减掉 margin 的横向值 "
+          "{}px，若减掉后小于 0 就按 0 算。",
+          ipid::GetMinMaxSizesString(min_max_func_returned),
+          margins.InlineSum());
+      LayoutUnit actual_available_size =
+          (available_size - margins.InlineSum()).ClampNegativeToZero();
+      LayoutUnit ret = min_max_func_returned.ShrinkToFit(actual_available_size);
+      ipid_depth_log.FPrint(
+          "减掉 margin 后，实际可用空间为 {}。\n然后，执行 fit-content 的 "
+          "ShrinkToFit 逻辑，将元素的固有宽度 {} ShrinkToFit 到实际可用空间 {} "
+          "上。",
+          actual_available_size,
+          ipid::GetMinMaxSizesString(min_max_func_returned),
+          actual_available_size);
+
+      ipid_depth_log.FPrint(
+          "ShrinkToFit 的计算结果为 {}，故 fit-content 的最终解析结果为 {}。",
+          ret, ret);
+      return ret;
     }
     case Length::kAuto:
       if (length_type == LengthTypeInternal::kMin &&
           RuntimeEnabledFeatures::LayoutMinSizeAutoIndefiniteEnabled()) {
-        return border_padding.InlineSum();
+        LayoutUnit ret = border_padding.InlineSum();
+        ipid_depth_log.FPrint(
+            "[新逻辑 LayoutMinSizeAutoIndefinite 开启] 当前是从 "
+            "ResolveMinInlineLength 中调用本函数，因此当解析 auto 时，其值为 "
+            "border+padding 的横向值 {}px。",
+            ret);
+        return ret;
       }
       [[fallthrough]];
     case Length::kNone:
+      ipid_depth_log.FPrint("由于直接对 auto 或 none 的宽度作解析，因此解析结果为不明确值 (-1)。");
       return kIndefiniteSize;
     case Length::kFlex:
       NOTREACHED() << "Should only be used for grid.";
@@ -171,23 +405,70 @@ LayoutUnit ResolveBlockLengthInternal(
     LayoutUnit override_available_size,
     const LayoutUnit* override_percentage_resolution_size,
     BlockSizeFunctionRef block_size_func) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ResolveBlockLengthInternal");
+
   DCHECK_EQ(constraint_space.GetWritingMode(), style.GetWritingMode());
+
+  ipid_depth_log.FPrint(
+      "正在解析高度 {}，\n开辟的空间：{}\n上游需要解析哪种高度：{}\n当前元素的 "
+      "border+padding：{}",
+      original_length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetLengthTypeInternalString(length_type),
+      ipid::GetBoxStrutString(border_padding));
 
   // For min-block-size, this might still be 'auto'.
   const Length& length =
       original_length.IsAuto() && auto_length ? *auto_length : original_length;
+
+  if (original_length.IsAuto() && length.IsAuto()) {
+    ipid_depth_log.FPrint(
+        "当前要解析的高度为 auto，但上游没有传 "
+        "auto_length（可以理解为一个兜底值，当高度为 auto "
+        "时兜底为此值），因此后续将直接对 "
+        "auto 值作解析。");
+  } else if (original_length.IsAuto() && !length.IsAuto()) {
+    ipid_depth_log.FPrint(
+        "当前要解析的高度为 auto，但上游传入了 auto_length = "
+        "{}（可以理解为一个兜底值，当高度为 auto "
+        "时兜底为此值），因此后续要解析的高度值变为 {}。",
+        length, length);
+  }
   switch (length.GetType()) {
     case Length::kStretch: {
       const LayoutUnit available_size =
           override_available_size == kIndefiniteSize
               ? constraint_space.AvailableSize().block_size
               : override_available_size;
+      ipid_depth_log.FPrint("Length 为 {}，因此首先需获取当前的可用空间。",
+                            ipid::GetLengthTypeString(length.GetType()));
+      if (override_available_size != kIndefiniteSize) {
+        ipid_depth_log.FPrint(
+            "上游从函数参数中传入了 override_available_size: "
+            "{}，因此可用空间为该值。",
+            override_available_size);
+      } else {
+        ipid_depth_log.FPrint(
+            "可用空间由开辟的 ConstraintSpace 决定，从中取出的可用空间为 {}。",
+            available_size);
+      }
       if (available_size == kIndefiniteSize) {
-        return length_type == LengthTypeInternal::kMain
-                   ? block_size_func(SizeType::kContent)
-                   : kIndefiniteSize;
+        ipid_depth_log.FPrint("可用空间为 -1，需要根据上游调用场景判断解析结果。");
+        if (length_type == LengthTypeInternal::kMain) {
+          ipid_depth_log.FPrint(
+              "上游调用场景为解析主高度，因此调用 "
+              "block_size_func(SizeType::kContent) 获取固有高度作为解析结果。");
+          LayoutUnit ret = block_size_func(SizeType::kContent);
+          ipid_depth_log.FPrint("高度 {} 的最终解析结果为 {}。", length, ret);
+          return ret;
+        } else {
+          ipid_depth_log.FPrint(
+              "上游调用场景为解析最小或最大高度，因此解析结果为不明确值 "
+              "(-1)。return kIndefiniteSize");
+          return kIndefiniteSize;
+        }
       }
       DCHECK_GE(available_size, LayoutUnit());
+      ipid_depth_log.FPrint("正在计算当前节点的 margin 值。");
       const BoxStrut margins = ComputeMarginsForSelf(constraint_space, style);
       const LogicalBoxSides& ignore_margin_sides =
           constraint_space.IgnoreMarginsForStretch();
@@ -206,46 +487,108 @@ LayoutUnit ResolveBlockLengthInternal(
           override_percentage_resolution_size
               ? *override_percentage_resolution_size
               : constraint_space.PercentageResolutionBlockSize();
+      if (override_percentage_resolution_size) {
+        ipid_depth_log.FPrint(
+            "上游传入了 override_percentage_resolution_size: "
+            "{}，用作百分比解析的基准高度。",
+            *override_percentage_resolution_size);
+      } else {
+        ipid_depth_log.FPrint(
+            "百分比解析的基准高度由 ConstraintSpace "
+            "决定，从中取出的基准高度为 {}。",
+            percentage_resolution_size);
+      }
       if (length.HasPercent() &&
           percentage_resolution_size == kIndefiniteSize) {
+        ipid_depth_log.FPrint(
+            "高度包含百分比值，但百分比解析基准为 "
+            "-1（不明确），需要根据上游调用场景判断解析结果。");
         switch (length_type) {
           case LengthTypeInternal::kMin: {
+            ipid_depth_log.FPrint(
+                "上游调用场景为解析最小高度，因此假设百分比解析基准为 "
+                "0（而不是不明确的值），继续接下来的解析逻辑。");
             percentage_resolution_size = LayoutUnit();
             break;
           }
-          case LengthTypeInternal::kMain:
-            return block_size_func(SizeType::kContent);
-          case LengthTypeInternal::kMax:
+          case LengthTypeInternal::kMain: {
+            ipid_depth_log.FPrint(
+                "上游调用场景为解析主高度，因此调用 "
+                "block_size_func(SizeType::kContent) 获取固有高度作为解析结果。");
+            LayoutUnit ret = block_size_func(SizeType::kContent);
+            ipid_depth_log.FPrint("高度 {} 的最终解析结果为 {}。", length, ret);
+            return ret;
+          }
+          case LengthTypeInternal::kMax: {
+            ipid_depth_log.FPrint(
+                "上游调用场景为解析最大高度，因此解析结果为不明确值 (-1)。");
             return kIndefiniteSize;
+          }
         }
       }
       bool evaluated_indefinite = false;
       LayoutUnit value = MinimumValueForLength(
           length, percentage_resolution_size,
           {.intrinsic_evaluator = [&](const Length& length_to_evaluate) {
+            IpidDepthLog ipid_depth_log(
+                "length_utils.cc: ResolveBlockLengthInternal 传给 "
+                "MinimumValueForLength 的闭包: intrinsic_evaluator");
+
+            ipid_depth_log.FPrint(
+                "递归解析高度：为了最终解析高度 {}，现在我们递归调用 "
+                "ResolveBlockLengthInternal 来解析高度 {} 的值。",
+                length, length_to_evaluate);
+
             LayoutUnit result = ResolveBlockLengthInternal(
                 constraint_space, style, border_padding, length_to_evaluate,
                 auto_length, length_type, override_available_size,
                 override_percentage_resolution_size, block_size_func);
             if (result == kIndefiniteSize) {
               evaluated_indefinite = true;
+              ipid_depth_log.FPrint("高度 {} 的解析结果为不明确值 (-1)。",
+                                    length_to_evaluate);
               return kIndefiniteSize;
             }
             if (style.BoxSizing() == EBoxSizing::kContentBox) {
+              if (border_padding.BlockSum() > LayoutUnit()) {
+                ipid_depth_log.FPrint(
+                    "高度 {} 的解析结果为 {}，但是由于当前元素为 "
+                    "box-sizing: content-box，我们需要减去 border + "
+                    "padding 的纵向值 {}px。",
+                    length_to_evaluate, result, border_padding.BlockSum());
+              }
               result -= border_padding.BlockSum();
             }
             DCHECK_GE(result, LayoutUnit());
+
+            ipid_depth_log.FPrint("高度 {} 的最终解析结果为 {}。",
+                                  length_to_evaluate, result);
             return result;
           }});
 
       if (evaluated_indefinite) {
+        ipid_depth_log.FPrint(
+            "上面进行了「递归解析高度」，其中得到了不明确值 "
+            "(-1)，因此高度 {} 的最终解析结果也为不明确值 (-1)。",
+            length);
         return kIndefiniteSize;
       }
 
-      if (style.BoxSizing() == EBoxSizing::kBorderBox)
+      if (style.BoxSizing() == EBoxSizing::kBorderBox) {
+        ipid_depth_log.FPrint(
+            "当前元素的 box-sizing 为 border-box，因此最终结果为 {} 和 "
+            "border+padding 纵向值 {} 的较大值。",
+            value, border_padding.BlockSum());
         value = std::max(border_padding.BlockSum(), value);
-      else
+      } else {
+        ipid_depth_log.FPrint(
+            "当前元素的 box-sizing 为 content-box，因此最终结果为 {} 加上 "
+            "border+padding 纵向值 {}。",
+            value, border_padding.BlockSum());
         value += border_padding.BlockSum();
+      }
+
+      ipid_depth_log.FPrint("高度 {} 的最终解析结果为 {}。", length, value);
       return value;
     }
     case Length::kContent:
@@ -253,6 +596,11 @@ LayoutUnit ResolveBlockLengthInternal(
     case Length::kMaxContent:
     case Length::kMinIntrinsic:
     case Length::kFitContent: {
+      ipid_depth_log.FPrint(
+          "要解析高度 {}，就需要算出该元素的固有高度。接下来调用 "
+          "block_size_func({}) 进行计算。",
+          length,
+          length.IsMinIntrinsic() ? "SizeType::kIntrinsic" : "SizeType::kContent");
       const LayoutUnit intrinsic_size = block_size_func(
           length.IsMinIntrinsic() ? SizeType::kIntrinsic : SizeType::kContent);
 #if DCHECK_IS_ON()
@@ -264,15 +612,24 @@ LayoutUnit ResolveBlockLengthInternal(
           !constraint_space.HasBlockFragmentation())
         DCHECK_GE(intrinsic_size, border_padding.BlockSum());
 #endif  // DCHECK_IS_ON()
+      ipid_depth_log.FPrint("高度 {} 的最终解析结果为 {}。", length,
+                            intrinsic_size);
       return intrinsic_size;
     }
     case Length::kAuto:
       if (length_type == LengthTypeInternal::kMin &&
           RuntimeEnabledFeatures::LayoutMinSizeAutoIndefiniteEnabled()) {
-        return border_padding.BlockSum();
+        LayoutUnit ret = border_padding.BlockSum();
+        ipid_depth_log.FPrint(
+            "[新逻辑 LayoutMinSizeAutoIndefinite 开启] 当前是从 "
+            "ResolveMinBlockLength 中调用本函数，因此当解析 auto 时，其值为 "
+            "border+padding 的纵向值 {}px。",
+            ret);
+        return ret;
       }
       [[fallthrough]];
     case Length::kNone:
+      ipid_depth_log.FPrint("由于直接对 auto 或 none 的高度作解析，因此解析结果为不明确值 (-1)。");
       return kIndefiniteSize;
     case Length::kFlex:
       NOTREACHED() << "Should only be used for grid.";
@@ -287,6 +644,47 @@ LayoutUnit InlineSizeFromAspectRatio(const BoxStrut& border_padding,
                                      const LogicalSize& aspect_ratio,
                                      EBoxSizing box_sizing,
                                      LayoutUnit block_size) {
+  // 以下为旁路日志，完全不侵入 Chromium/Blink
+  // 现有代码；但是需要后续 Blink 更新时保证逻辑一致
+  IpidDepthLog ipid_depth_log("length_utils.cc: InlineSizeFromAspectRatio");
+  LayoutUnit ipidBorderPaddingInline = border_padding.InlineSum();
+  ipid_depth_log.FPrint(
+      "正在从 aspect-ratio 中获取宽度值。\n\n当前元素 aspect-ratio 为 "
+      "{}\nborder+padding 为 {}\n高度为 {}。",
+      ipid::GetLogicalSizeString(aspect_ratio),
+      ipid::GetBoxStrutString(border_padding), block_size);
+  if (box_sizing == EBoxSizing::kBorderBox) {
+    LayoutUnit ipidRet =
+        block_size.MulDiv(aspect_ratio.inline_size, aspect_ratio.block_size);
+
+    ipid_depth_log.FPrint(
+        "当前元素的 box-sizing 为 border-box，因此宽度值 = 高度 {} * (宽 {} / "
+        "高 {}) = {}",
+        block_size, aspect_ratio.inline_size, aspect_ratio.block_size, ipidRet);
+
+    if (ipidBorderPaddingInline > ipidRet) {
+      ipid_depth_log.FPrint(
+          "但是由于 border+padding 的横向值： {}px，大于从 aspect-ratio "
+          "中得到的宽度值 "
+          "{}px，故最终的宽度值计算结果为 {}。",
+          ipidBorderPaddingInline, ipidRet, ipidBorderPaddingInline);
+    }
+  } else {
+    LayoutUnit ipidBorderPaddingBlock = border_padding.BlockSum();
+    LayoutUnit ipidHeightWithoutBorderPadding =
+        block_size - ipidBorderPaddingBlock;
+    LayoutUnit ipidRet =
+        ipidHeightWithoutBorderPadding.MulDiv(aspect_ratio.inline_size,
+                                              aspect_ratio.block_size) +
+        ipidBorderPaddingInline;
+    ipid_depth_log.FPrint(
+        "当前元素的 box-sizing 为 content-box，因此宽度值 = (高度 {} - "
+        "border+padding 的纵向值 {}) * (宽 {} / "
+        "高 {}) + border+padding 的横向值 {} = {}",
+        block_size, ipidBorderPaddingBlock, aspect_ratio.inline_size,
+        aspect_ratio.block_size, ipidBorderPaddingInline, ipidRet);
+  }
+
   if (box_sizing == EBoxSizing::kBorderBox) {
     return std::max(
         border_padding.InlineSum(),
@@ -301,6 +699,47 @@ LayoutUnit BlockSizeFromAspectRatio(const BoxStrut& border_padding,
                                     const LogicalSize& aspect_ratio,
                                     EBoxSizing box_sizing,
                                     LayoutUnit inline_size) {
+  // 以下为旁路日志，完全不侵入 Chromium/Blink
+  // 现有代码；但是需要后续 Blink 更新时保证逻辑一致
+  IpidDepthLog ipid_depth_log("length_utils.cc: BlockSizeFromAspectRatio");
+  ipid_depth_log.FPrint(
+      "正在从 aspect-ratio 中获取高度值。\n\n当前元素 aspect-ratio 为 "
+      "{}\nborder+padding 为 {}\n宽度为 {}。",
+      ipid::GetLogicalSizeString(aspect_ratio),
+      ipid::GetBoxStrutString(border_padding), inline_size);
+  if (box_sizing == EBoxSizing::kBorderBox) {
+    LayoutUnit ipidRet =
+        inline_size.MulDiv(aspect_ratio.block_size, aspect_ratio.inline_size);
+    LayoutUnit ipidBorderPaddingBlock = border_padding.BlockSum();
+
+    ipid_depth_log.FPrint(
+        "当前元素的 box-sizing 为 border-box，因此高度值 = 宽度 {} * (高 {} / "
+        "宽 {}) = {}",
+        inline_size, aspect_ratio.block_size, aspect_ratio.inline_size,
+        ipidRet);
+
+    if (ipidBorderPaddingBlock > ipidRet) {
+      ipid_depth_log.FPrint(
+          "但是由于 border+padding 的纵向值： {}px，大于从 aspect-ratio "
+          "中得到的高度值 {}px，故最终的高度值计算结果为 {}。",
+          ipidBorderPaddingBlock, ipidRet, ipidBorderPaddingBlock);
+    }
+  } else {
+    LayoutUnit ipidBorderPaddingInline = border_padding.InlineSum();
+    LayoutUnit ipidWidthWithoutBorderPadding =
+        inline_size - ipidBorderPaddingInline;
+    LayoutUnit ipidRet =
+        ipidWidthWithoutBorderPadding.MulDiv(aspect_ratio.block_size,
+                                             aspect_ratio.inline_size) +
+        border_padding.BlockSum();
+    ipid_depth_log.FPrint(
+        "当前元素的 box-sizing 为 content-box，因此高度值 = (宽度 {} - "
+        "border+padding 的横向值 {}) * (高 {} / "
+        "宽 {}) + border+padding 的纵向值 {} = {}",
+        inline_size, ipidBorderPaddingInline, aspect_ratio.block_size,
+        aspect_ratio.inline_size, border_padding.BlockSum(), ipidRet);
+  }
+
   DCHECK_GE(inline_size, border_padding.InlineSum());
   if (box_sizing == EBoxSizing::kBorderBox) {
     return std::max(
@@ -364,13 +803,24 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
     const BlockNode& child,
     const ConstraintSpace& space,
     MinMaxSizesFunctionRef original_min_max_sizes_func) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeMinAndMaxContentContributionInternal");
+
   const auto& style = child.Style();
   const auto border_padding =
       ComputeBorders(space, child) + ComputePadding(space, style);
 
+  ipid_depth_log.FPrint(
+      "开始计算元素 {} 对父元素的固有宽度的贡献值。\n"
+      "当前元素 border + padding：{}\n"
+      "开辟的空间：{}",
+      ipid::GetNodeStr(child), ipid::GetBoxStrutString(border_padding),
+      ipid::GetConstraintSpaceString(space));
+
   // First check if we are an orthogonal writing-mode root, then attempt to
   // resolve the block-size.
   if (!IsParallelWritingMode(parent_writing_mode, style.GetWritingMode())) {
+    // 打日志不考虑 writing-mode 不为常规值的情况
     const LayoutUnit block_size = ComputeBlockSizeForFragment(
         space, child, border_padding, /* intrinsic_size */ kIndefiniteSize,
         /* inline_size */ kIndefiniteSize);
@@ -391,9 +841,15 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
   bool depends_on_block_constraints = false;
   bool applied_aspect_ratio = false;
   auto min_max_sizes_func = [&](SizeType type) {
+    ipid_depth_log.FPrint(
+        "为了计算固有宽度贡献值，现在将调用元素 {} 的 ComputeMinMaxSizes({}) "
+        "计算其固有宽度。",
+        ipid::GetNodeStr(child), ipid::GetSizeTypeString(type));
     const MinMaxSizesResult result = original_min_max_sizes_func(type);
     depends_on_block_constraints |= result.depends_on_block_constraints;
     applied_aspect_ratio |= result.applied_aspect_ratio;
+    ipid_depth_log.FPrint("元素 {} 的固有宽度计算结果为：{}",
+                          ipid::GetNodeStr(child), result.sizes);
     return result;
   };
 
@@ -402,9 +858,27 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
   // First attempt to resolve the main-length, if we can't resolve (e.g. a
   // percentage, or similar) it'll return a kIndefiniteSize.
   const Length& main_length = style.LogicalWidth();
+  ipid_depth_log.FPrint(
+      "该元素的 CSS 样式中，width 为: {}，正在试图解析该 width", main_length);
+
   const LayoutUnit extent =
       ResolveMainInlineLength(space, style, border_padding, min_max_sizes_func,
                               main_length, &Length::FitContent());
+
+  ipid_depth_log.FPrint("width: {} 的解析结果为 {}", main_length, extent);
+
+  if (extent == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "由于 width 解析出的是不明确值 "
+        "(-1)"
+        "，因此还需要计算该元素自身的固有宽度，才能得到其对父元素的固有宽度贡献"
+        "值。");
+  } else {
+    ipid_depth_log.FPrint(
+        "width 解析出的结果是明确值 {}，因此目前直接将该值 ({}, {}) "
+        "作为固有宽度贡献值",
+        extent, extent, extent);
+  }
 
   // If we successfully resolved our main size, just use that as the
   // contribution, otherwise invoke the callback.
@@ -412,12 +886,24 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
                           ? min_max_sizes_func(SizeType::kContent).sizes
                           : MinMaxSizes{extent, extent};
 
+  ipid_depth_log.FPrint("经过上述计算，目前得到的固有宽度贡献值为: {}", sizes);
+
   // If we have calc-size() with a sizing-keyword of auto/fit-content/stretch
   // we need to perform an additional step. Treat the sizing-keyword as auto,
   // then resolve auto as both min-content, and max-content.
   if (main_length.IsCalculated() &&
       (main_length.HasAuto() || main_length.HasFitContent() ||
        main_length.HasStretch())) {
+    ipid_depth_log.FPrint(
+        "特殊逻辑！在该元素的 CSS width 中检测到了 calc-size() "
+        "函数，且函数中包含 auto/fit-content/stretch 关键字，"
+        "因此需要执行一个额外的步骤：我们将 content/stretch 关键字视为 "
+        "auto，然后将 auto 分别兜底为 min-content 和 max-content，来解析两次 "
+        "width "
+        "值，所得到的值将覆盖上述步骤得到的值，作为最终的固有宽度贡献值（兜底为"
+        " min-content 时为固有最小宽度贡献，兜底为 max-content "
+        "时为固有最大宽度贡献）。");
+
     sizes.min_size = ResolveMainInlineLength(
         space, style, border_padding, min_max_sizes_func, main_length,
         /* auto_length */ &Length::MinContent(),
@@ -428,6 +914,9 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
         /* auto_length */ &Length::MaxContent(),
         /* override_available_size */ kIndefiniteSize,
         CalcSizeKeywordBehavior::kAsAuto);
+
+    ipid_depth_log.FPrint("经过上述步骤，目前已经将固有宽度贡献值覆盖为：{}",
+                          sizes);
   }
 
   // Check if we should apply the automatic minimum size.
@@ -437,27 +926,67 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
           ? &Length::MinIntrinsic()
           : nullptr;
 
-  // If fit-content is present we need to resolve the min/max sizes twice, once
-  // assuming its min-content, and max-content. See:
+  ipid_depth_log.FPrint(
+      "接下来，我们计算 min-width 和 max-width 对固有宽度贡献值的影响。");
+
+  // If fit-content is present we need to resolve the min/max sizes twice,
+  // once assuming its min-content, and max-content. See:
   // https://github.com/w3c/csswg-drafts/issues/10721
   if (style.LogicalMinWidth().HasFitContent() ||
       style.LogicalMaxWidth().HasFitContent()) {
+    ipid_depth_log.FPrint(
+        "特殊逻辑！检测到 min-width 或 max-width 使用了 fit-content，"
+        "需要分别以 FitContentMode::kMinContribution 和 "
+        "FitContentMode::kMaxContribution 方式解析两次该元素的 min-width 和 "
+        "max-width。");
+
     const MinMaxSizes min_sizes = ComputeMinMaxInlineSizes(
         space, child, border_padding, auto_min_length, min_max_sizes_func,
         TransferredSizesMode::kNormal, FitContentMode::kMinContribution);
     const MinMaxSizes max_sizes = ComputeMinMaxInlineSizes(
         space, child, border_padding, auto_min_length, min_max_sizes_func,
         TransferredSizesMode::kNormal, FitContentMode::kMaxContribution);
+
+    ipid_depth_log.FPrint(
+        "目前的固有宽度贡献值为 {}\n\n"
+        "1. 在 FitContentMode::kMinContribution 模式下，解析出的元素的 "
+        "(min-width, max-width) 为：{}。我们要将固有最小宽度的贡献值 {} clamp "
+        "到这两个值中间。\n"
+        "2. 在 FitContentMode::kMaxContribution 模式下，解析出的元素的 "
+        "(min-width, max-width) 为：{}。我们要将固有最大宽度的贡献值 {} clamp "
+        "到这两个值中间。",
+        sizes, min_sizes, sizes.min_size, max_sizes, sizes.max_size);
+
     sizes.min_size = min_sizes.ClampSizeToMinAndMax(sizes.min_size);
     sizes.max_size = max_sizes.ClampSizeToMinAndMax(sizes.max_size);
+
+    ipid_depth_log.FPrint("执行 clamp 后，最终得到的固有宽度贡献值为：{}",
+                          sizes);
   } else {
+    ipid_depth_log.FPrint(
+        "我们通过调用 ComputeMinMaxInlineSizes 来计算元素的 min-width 和 "
+        "max-width。");
+
     const MinMaxSizes min_max_sizes = ComputeMinMaxInlineSizes(
         space, child, border_padding, auto_min_length, min_max_sizes_func);
+
+    ipid_depth_log.FPrint(
+        "min-width/max-width 计算结果为：{}。\n\n我们的固有宽度贡献值 {} "
+        "的两个数字都必须 >= min-width {}，也必须 <= max-width {}。",
+        min_max_sizes, sizes, min_max_sizes.min_size, min_max_sizes.max_size);
+
     sizes.Constrain(min_max_sizes.max_size);
     sizes.Encompass(min_max_sizes.min_size);
+
+    ipid_depth_log.FPrint("按照上述限制计算后，得到的固有宽度贡献值为：{}",
+                          sizes);
   }
 
-  return {sizes, depends_on_block_constraints};
+  const MinMaxSizesResult result = {sizes, depends_on_block_constraints};
+  ipid_depth_log.FPrint("元素 {} 的最终的固有宽度贡献值为：{}",
+                        ipid::GetNodeStr(child), result.sizes);
+
+  return result;
 }
 
 MinMaxSizesResult ComputeMinAndMaxContentContribution(
@@ -465,22 +994,50 @@ MinMaxSizesResult ComputeMinAndMaxContentContribution(
     const BlockNode& child,
     const ConstraintSpace& space,
     const MinMaxSizesFloatInput float_input) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeMinAndMaxContentContribution");
+
   const auto& child_style = child.Style();
   const auto parent_writing_mode = parent_style.GetWritingMode();
   const auto child_writing_mode = child_style.GetWritingMode();
 
+  ipid_depth_log.FPrint(
+      "正在计算子元素 {} "
+      "对父容器宽度的贡献（即该子元素需要的最小和最大内容宽度）。\n"
+      "开辟的空间：{}",
+      ipid::GetNodeStr(child), ipid::GetConstraintSpaceString(space));
+
   if (IsParallelWritingMode(parent_writing_mode, child_writing_mode)) {
-    if (child.IsReplaced())
+    ipid_depth_log.FPrint("父子容器书写模式平行，检查是否为替换元素。");
+    if (child.IsReplaced()) {
+      ipid_depth_log.FPrint(
+          "子元素为替换元素（如 img、video），调用专门的替换元素处理函数。");
       return ComputeMinAndMaxContentContributionForReplaced(child, space);
+    }
+  } else {
+    ipid_depth_log.FPrint(
+        "父子容器书写模式正交（如父容器水平，子容器垂直），需要特殊处理。");
   }
 
+  ipid_depth_log.FPrint(
+      "创建MinMaxSizesFunc回调函数，用于获取子元素的固有尺寸。");
   auto MinMaxSizesFunc = [&](SizeType type) -> MinMaxSizesResult {
+    ipid_depth_log.FPrint("MinMaxSizesFunc被调用，尺寸类型：{}",
+                          ipid::GetSizeTypeString(type));
     return child.ComputeMinMaxSizes(parent_writing_mode, type, space,
                                     float_input);
   };
 
-  return ComputeMinAndMaxContentContributionInternal(parent_writing_mode, child,
-                                                     space, MinMaxSizesFunc);
+  ipid_depth_log.FPrint(
+      "调用ComputeMinAndMaxContentContributionInternal完成具体计算。");
+  const MinMaxSizesResult result = ComputeMinAndMaxContentContributionInternal(
+      parent_writing_mode, child, space, MinMaxSizesFunc);
+
+  ipid_depth_log.FPrint("计算完成，子元素 {} 的内容贡献为：{}",
+                        ipid::GetNodeStr(child),
+                        ipid::GetMinMaxSizesResultString(result));
+
+  return result;
 }
 
 MinMaxSizesResult ComputeMinAndMaxContentContributionForSelf(
@@ -534,73 +1091,161 @@ LayoutUnit ComputeInlineSizeForFragmentInternal(
     const BlockNode& node,
     const BoxStrut& border_padding,
     MinMaxSizesFunctionRef min_max_sizes_func) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeInlineSizeForFragmentInternal");
+
   const auto& style = node.Style();
   const Length& logical_width = style.LogicalWidth();
 
+  ipid_depth_log.FPrint(
+      "正在计算元素 {} 的宽度。\n"
+      "当前元素样式中的 width 属性值：{}\n"
+      "开辟的空间：{}\n"
+      "当前元素的 border + padding：{}",
+      ipid::GetNodeStr(node), logical_width,
+      ipid::GetConstraintSpaceString(space),
+      ipid::GetBoxStrutString(border_padding));
+
   const bool may_apply_aspect_ratio = ([&]() {
     if (style.AspectRatio().IsAuto()) {
+      ipid_depth_log.FPrint(
+          "元素没有设置 aspect-ratio（值为 auto），因此不考虑宽高比的影响。");
       return false;
     }
+
+    ipid_depth_log.FPrint(
+        "元素设置了 aspect-ratio: {}，正在检查是否可以应用宽高比约束。",
+        style.AspectRatio().GetLayoutRatio());
 
     // Even though an implicit stretch will resolve - we prefer the inline-axis
     // size for this case.
     if (style.LogicalHeight().HasAuto() &&
         space.BlockAutoBehavior() != AutoSizeBehavior::kStretchExplicit) {
+      ipid_depth_log.FPrint(
+          "元素的 height 为 auto 且当前空间的高度自动行为为 {} "
+          "（不是显式拉伸），此时优先使用宽度轴的尺寸，不应用 aspect-ratio。",
+          ipid::GetAutoSizeBehaviorString(space.BlockAutoBehavior()));
       return false;
     }
 
     // If we can resolve our block-size with no intrinsic-size we can use our
     // aspect-ratio.
-    return ComputeBlockSizeForFragment(space, node, border_padding,
-                                       /* intrinsic_size */ kIndefiniteSize,
-                                       /* inline_size */ kIndefiniteSize) !=
-           kIndefiniteSize;
+    bool can_compute_height =
+        ComputeBlockSizeForFragment(space, node, border_padding,
+                                    /* intrinsic_size */ kIndefiniteSize,
+                                    /* inline_size */ kIndefiniteSize) !=
+        kIndefiniteSize;
+
+    if (can_compute_height) {
+      ipid_depth_log.FPrint(
+          "可以在不依赖固有尺寸的情况下计算出元素的高度，因此可以应用 "
+          "aspect-ratio。");
+    } else {
+      ipid_depth_log.FPrint(
+          "无法在不依赖固有尺寸的情况下计算出元素的高度，因此不应用 "
+          "aspect-ratio。");
+    }
+
+    return can_compute_height;
   })();
 
   const Length& auto_length = ([&]() {
+    ipid_depth_log.FPrint(
+        "正在确定当 width 为 auto 时应该使用的兜底值（auto_length）。");
+
     if (space.AvailableSize().inline_size == kIndefiniteSize) {
+      ipid_depth_log.FPrint(
+          "当前可用宽度为不确定值（-1），因此 auto 兜底为 min-content。");
       return Length::MinContent();
     }
     if (space.InlineAutoBehavior() == AutoSizeBehavior::kStretchExplicit) {
+      ipid_depth_log.FPrint(
+          "当前空间的宽度自动行为为 kStretchExplicit（显式拉伸），"
+          "因此 auto 兜底为 stretch。");
       return Length::Stretch();
     }
     if (may_apply_aspect_ratio) {
+      ipid_depth_log.FPrint(
+          "由于可以应用 aspect-ratio，auto 兜底为 fit-content，"
+          "这样可以基于内容尺寸和宽高比来确定最终宽度。");
       return Length::FitContent();
     }
     if (space.InlineAutoBehavior() == AutoSizeBehavior::kStretchImplicit) {
+      ipid_depth_log.FPrint(
+          "当前空间的宽度自动行为为 kStretchImplicit（隐式拉伸），"
+          "因此 auto 兜底为 stretch。");
       return Length::Stretch();
     }
     DCHECK_EQ(space.InlineAutoBehavior(), AutoSizeBehavior::kFitContent);
+    ipid_depth_log.FPrint(
+        "当前空间的宽度自动行为为 kFitContent，因此 auto 兜底为 fit-content。");
     return Length::FitContent();
   })();
 
   // Check if we should apply the automatic minimum size.
   // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-minimum
   bool apply_automatic_min_size = ([&]() {
+    ipid_depth_log.FPrint(
+        "正在检查是否应该应用自动最小尺寸（automatic minimum size）。");
+
     if (style.IsScrollContainer()) {
+      ipid_depth_log.FPrint("元素是滚动容器，不应用自动最小尺寸。");
       return false;
     }
     if (!may_apply_aspect_ratio) {
+      ipid_depth_log.FPrint("由于不应用 aspect-ratio，不需要自动最小尺寸。");
       return false;
     }
     if (logical_width.HasContentOrIntrinsic()) {
+      ipid_depth_log.FPrint(
+          "元素的 width 属性值 {} 包含内容相关或固有关键字，应用自动最小尺寸。",
+          logical_width);
       return true;
     }
     if (logical_width.HasAuto() && auto_length.HasContentOrIntrinsic()) {
+      ipid_depth_log.FPrint(
+          "元素的 width 为 auto，且兜底值 {} "
+          "包含内容相关或固有关键字，应用自动最小尺寸。",
+          auto_length);
       return true;
     }
+    ipid_depth_log.FPrint("不满足应用自动最小尺寸的条件。");
     return false;
   })();
+
+  ipid_depth_log.FPrint(
+      "接下来调用 ResolveMainInlineLength 来解析元素的主要宽度。\n"
+      "width 属性值：{}\n"
+      "auto 兜底值：{}",
+      logical_width, auto_length);
 
   const LayoutUnit extent =
       ResolveMainInlineLength(space, style, border_padding, min_max_sizes_func,
                               logical_width, &auto_length);
 
-  return ComputeMinMaxInlineSizes(
-             space, node, border_padding,
-             apply_automatic_min_size ? &Length::MinIntrinsic() : nullptr,
-             min_max_sizes_func)
-      .ClampSizeToMinAndMax(extent);
+  ipid_depth_log.FPrint("ResolveMainInlineLength 的解析结果为：{}", extent);
+
+  ipid_depth_log.FPrint(
+      "最后调用 ComputeMinMaxInlineSizes 计算 min-width 和 max-width 约束，"
+      "并将主要宽度 {} clamp 到这些约束范围内。{}",
+      extent,
+      apply_automatic_min_size
+          ? "由于需要应用自动最小尺寸，将使用 min-intrinsic 作为 min-width 。"
+          : "不应用自动最小尺寸约束。");
+
+  MinMaxSizes min_max_sizes = ComputeMinMaxInlineSizes(
+      space, node, border_padding,
+      apply_automatic_min_size ? &Length::MinIntrinsic() : nullptr,
+      min_max_sizes_func);
+
+  LayoutUnit final_width = min_max_sizes.ClampSizeToMinAndMax(extent);
+
+  ipid_depth_log.FPrint(
+      "min-width/max-width 约束范围：{}\n"
+      "将主要宽度 {} clamp 到约束范围后的最终宽度：{}",
+      ipid::GetMinMaxSizesString(min_max_sizes), extent, final_width);
+
+  return final_width;
 }
 
 LayoutUnit ComputeInlineSizeForFragment(
@@ -674,26 +1319,122 @@ MinMaxSizes ComputeMinMaxBlockSizes(const ConstraintSpace& space,
                                     const Length* auto_min_length,
                                     BlockSizeFunctionRef block_size_func,
                                     LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeMinMaxBlockSizes");
+
   const ComputedStyle& style = node.Style();
-  MinMaxSizes sizes = {
-      ResolveMinBlockLength(space, style, border_padding, block_size_func,
-                            style.LogicalMinHeight(), auto_min_length,
-                            override_available_size),
-      ResolveMaxBlockLength(space, style, border_padding,
-                            style.LogicalMaxHeight(), block_size_func,
-                            override_available_size)};
+
+  ipid_depth_log.FPrint(
+      "开始计算元素 {} 的 min-height 和 max-height 像素值。\n"
+      "开辟的空间：{}\n"
+      "当前元素的 border+padding：{}\n"
+      "CSS min-height 属性值：{}\n"
+      "CSS max-height 属性值：{}",
+      ipid::GetNodeStr(node), ipid::GetConstraintSpaceString(space),
+      ipid::GetBoxStrutString(border_padding), style.LogicalMinHeight(),
+      style.LogicalMaxHeight());
+
+  if (auto_min_length) {
+    ipid_depth_log.FPrint(
+        "检测到自动最小高度参数：{}，这通常用于 aspect-ratio "
+        "场景下的自动最小约束。",
+        *auto_min_length);
+  } else {
+    ipid_depth_log.FPrint(
+        "未传入自动最小高度参数，将直接使用 CSS min-height 属性。");
+  }
+
+  if (override_available_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "上游传入了 override_available_size: "
+        "{}，这将覆盖约束空间中的可用高度。",
+        override_available_size);
+  }
+
+  ipid_depth_log.FPrint(
+      "第 1 步：计算 min-height 像素值（调用 ResolveMinBlockLength）");
+
+  LayoutUnit min_size = ResolveMinBlockLength(
+      space, style, border_padding, block_size_func, style.LogicalMinHeight(),
+      auto_min_length, override_available_size);
+
+  ipid_depth_log.FPrint("第 1 步完成：min-height计算结果为 {}", min_size);
+
+  ipid_depth_log.FPrint(
+      "第 2 步：计算 max-height 像素值（调用 ResolveMaxBlockLength）");
+
+  LayoutUnit max_size = ResolveMaxBlockLength(
+      space, style, border_padding, style.LogicalMaxHeight(), block_size_func,
+      override_available_size);
+
+  ipid_depth_log.FPrint("第 2 步完成：max-height 像素值计算结果为 {}",
+                        max_size);
+
+  ipid_depth_log.FPrint(
+      "第 3 步：构建初始 MinMaxSizes 对象，当前状态：({}, {})", min_size,
+      max_size);
+
+  MinMaxSizes sizes = {min_size, max_size};
 
   // Clamp the auto min-size by the max-size.
   if (auto_min_length && style.LogicalMinHeight().HasAuto()) {
+    ipid_depth_log.FPrint(
+        "第 4 步：检测到需要限制自动最小高度。\n"
+        "条件满足：传入了 auto_min_length ({}) 且 CSS min-height 为 auto\n"
+        "操作前状态：({}, {})\n"
+        "将最小高度限制为不超过最大高度",
+        *auto_min_length, sizes.min_size, sizes.max_size);
+
     sizes.min_size = std::min(sizes.min_size, sizes.max_size);
+
+    ipid_depth_log.FPrint("第 4 步完成：限制后的状态：({}, {})", sizes.min_size,
+                          sizes.max_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "第 4 步：跳过自动最小高度限制。\n"
+        "原因：{}",
+        !auto_min_length ? "未传入 auto_min_length"
+                         : "CSS min-height 不是 auto");
   }
 
   // Tables can't shrink below their min-intrinsic size.
   if (node.IsTable()) {
-    sizes.Encompass(block_size_func(SizeType::kIntrinsic));
+    ipid_depth_log.FPrint(
+        "第 5 步：检测到当前元素为表格，需要应用表格特殊约束。\n"
+        "根据 CSS 表格规范，表格不能收缩到小于其固有最小尺寸。\n"
+        "操作前状态：({}, {})",
+        sizes.min_size, sizes.max_size);
+
+    ipid_depth_log.FPrint(
+        "正在调用 block_size_func(SizeType::kIntrinsic) 获取表格的固有尺寸。");
+    LayoutUnit intrinsic_size = block_size_func(SizeType::kIntrinsic);
+
+    ipid_depth_log.FPrint(
+        "表格的固有尺寸为：{}\n"
+        "使用 Encompass 方法确保最小尺寸包含固有尺寸",
+        intrinsic_size);
+
+    sizes.Encompass(intrinsic_size);
+
+    ipid_depth_log.FPrint("第 5 步完成：应用表格约束后的状态：({}, {})",
+                          sizes.min_size, sizes.max_size);
+  } else {
+    ipid_depth_log.FPrint("第 5 步：跳过表格特殊约束（当前元素不是表格）。");
   }
 
+  ipid_depth_log.FPrint(
+      "第 6 步：确保最大高度不小于最小高度（CSS 规范要求）。\n"
+      "操作前状态：({}, {})",
+      sizes.min_size, sizes.max_size);
+
   sizes.max_size = std::max(sizes.max_size, sizes.min_size);
+
+  ipid_depth_log.FPrint("第 6 步完成：调整后的最终状态：({}, {})",
+                        sizes.min_size, sizes.max_size);
+
+  ipid_depth_log.FPrint(
+      "元素 {} 的 min 和 max-height 像素值计算完成，最终结果：{}",
+      ipid::GetNodeStr(node), ipid::GetMinMaxSizesString(sizes));
+
   return sizes;
 }
 
@@ -702,20 +1443,70 @@ MinMaxSizes ComputeTransferredMinMaxInlineSizes(
     const MinMaxSizes& block_min_max,
     const BoxStrut& border_padding,
     const EBoxSizing sizing) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeTransferredMinMaxInlineSizes");
   DCHECK(!ratio.IsEmpty());
 
+  ipid_depth_log.FPrint(
+      "通过 aspect-ratio 从高度约束转换为宽度约束。\n"
+      "aspect-ratio：{}\n"
+      "输入的高度约束：{}\n"
+      "border+padding：{}\n"
+      "box-sizing：{}",
+      ipid::GetAspectRatioString(ratio),
+      ipid::GetMinMaxSizesString(block_min_max),
+      ipid::GetBoxStrutString(border_padding),
+      (sizing == EBoxSizing::kContentBox ? "content-box" : "border-box"));
+
   MinMaxSizes transferred_min_max = {LayoutUnit(), LayoutUnit::Max()};
+
+  ipid_depth_log.FPrint(
+      "步骤1：转换最小高度约束为最小宽度约束。");
   if (block_min_max.min_size > LayoutUnit()) {
+    ipid_depth_log.FPrint(
+        "最小高度约束为 {}px > 0，调用 InlineSizeFromAspectRatio 进行转换。",
+        block_min_max.min_size);
     transferred_min_max.min_size = InlineSizeFromAspectRatio(
         border_padding, ratio, sizing, block_min_max.min_size);
+    ipid_depth_log.FPrint("转换后的最小宽度约束：{}px",
+                          transferred_min_max.min_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "最小高度约束为 {}px <= 0，最小宽度约束保持默认值 0px。",
+        block_min_max.min_size);
   }
+
+  ipid_depth_log.FPrint(
+      "步骤2：转换最大高度约束为最大宽度约束。");
   if (block_min_max.max_size != LayoutUnit::Max()) {
+    ipid_depth_log.FPrint(
+        "最大高度约束为 {}px，不是无限大值，调用 InlineSizeFromAspectRatio 进行转换。",
+        block_min_max.max_size);
     transferred_min_max.max_size = InlineSizeFromAspectRatio(
         border_padding, ratio, sizing, block_min_max.max_size);
+    ipid_depth_log.FPrint("转换后的最大宽度约束：{}px",
+                          transferred_min_max.max_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "最大高度约束为无限大值，最大宽度约束保持默认无限大值。");
   }
+
+  ipid_depth_log.FPrint(
+      "步骤3：确保最大宽度约束不小于最小宽度约束。\n"
+      "调整前：{}",
+      ipid::GetMinMaxSizesString(transferred_min_max));
+
   // Minimum size wins over maximum size.
   transferred_min_max.max_size =
       std::max(transferred_min_max.max_size, transferred_min_max.min_size);
+
+  ipid_depth_log.FPrint(
+      "通过 aspect-ratio 转换得到的最终宽度约束：{}\n"
+      "- 最小宽度约束：{}px\n"
+      "- 最大宽度约束：{}px",
+      ipid::GetMinMaxSizesString(transferred_min_max),
+      transferred_min_max.min_size, transferred_min_max.max_size);
+
   return transferred_min_max;
 }
 
@@ -724,18 +1515,69 @@ MinMaxSizes ComputeTransferredMinMaxBlockSizes(
     const MinMaxSizes& inline_min_max,
     const BoxStrut& border_padding,
     const EBoxSizing sizing) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeTransferredMinMaxBlockSizes");
+
+  ipid_depth_log.FPrint(
+      "通过 aspect-ratio 从宽度约束转换为高度约束。\n"
+      "aspect-ratio：{}\n"
+      "输入的宽度约束：{}\n"
+      "border+padding：{}\n"
+      "box-sizing：{}",
+      ipid::GetAspectRatioString(ratio),
+      ipid::GetMinMaxSizesString(inline_min_max),
+      ipid::GetBoxStrutString(border_padding),
+      (sizing == EBoxSizing::kContentBox ? "content-box" : "border-box"));
+
   MinMaxSizes transferred_min_max = {LayoutUnit(), LayoutUnit::Max()};
+
+  ipid_depth_log.FPrint(
+      "步骤1：转换最小宽度约束为最小高度约束。");
   if (inline_min_max.min_size > LayoutUnit()) {
+    ipid_depth_log.FPrint(
+        "最小宽度约束为 {}px > 0，调用 BlockSizeFromAspectRatio 进行转换。",
+        inline_min_max.min_size);
     transferred_min_max.min_size = BlockSizeFromAspectRatio(
         border_padding, ratio, sizing, inline_min_max.min_size);
+    ipid_depth_log.FPrint("转换后的最小高度约束：{}px",
+                          transferred_min_max.min_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "最小宽度约束为 {}px <= 0，最小高度约束保持默认值 0px。",
+        inline_min_max.min_size);
   }
+
+  ipid_depth_log.FPrint(
+      "步骤2：转换最大宽度约束为最大高度约束。");
   if (inline_min_max.max_size != LayoutUnit::Max()) {
+    ipid_depth_log.FPrint(
+        "最大宽度约束为 {}px，不是无限大值，调用 BlockSizeFromAspectRatio 进行转换。",
+        inline_min_max.max_size);
     transferred_min_max.max_size = BlockSizeFromAspectRatio(
         border_padding, ratio, sizing, inline_min_max.max_size);
+    ipid_depth_log.FPrint("转换后的最大高度约束：{}px",
+                          transferred_min_max.max_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "最大宽度约束为无限大值，最大高度约束保持默认无限大值。");
   }
+
+  ipid_depth_log.FPrint(
+      "步骤3：确保最大高度约束不小于最小高度约束。\n"
+      "调整前：{}",
+      ipid::GetMinMaxSizesString(transferred_min_max));
+
   // Minimum size wins over maximum size.
   transferred_min_max.max_size =
       std::max(transferred_min_max.max_size, transferred_min_max.min_size);
+
+  ipid_depth_log.FPrint(
+      "通过 aspect-ratio 转换得到的最终高度约束：{}\n"
+      "- 最小高度约束：{}px\n"
+      "- 最大高度约束：{}px",
+      ipid::GetMinMaxSizesString(transferred_min_max),
+      transferred_min_max.min_size, transferred_min_max.max_size);
+
   return transferred_min_max;
 }
 
@@ -743,6 +1585,9 @@ MinMaxSizes ComputeMinMaxInlineSizesFromAspectRatio(
     const ConstraintSpace& constraint_space,
     const BlockNode& node,
     const BoxStrut& border_padding) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeMinMaxInlineSizesFromAspectRatio");
+
   // The spec requires us to clamp these by the specified size (it calls it the
   // preferred size). However, we actually don't need to worry about that,
   // because we only use this if the width is indefinite.
@@ -753,11 +1598,40 @@ MinMaxSizes ComputeMinMaxInlineSizesFromAspectRatio(
   const ComputedStyle& style = node.Style();
   DCHECK(!style.AspectRatio().IsAuto());
 
+  ipid_depth_log.FPrint(
+      "通过 aspect-ratio 计算元素 {} 的宽度约束。\n"
+      "开辟的空间：{}\n"
+      "元素 border+padding：{}\n"
+      "aspect-ratio：{}\n"
+      "box-sizing：{}",
+      ipid::GetNodeStr(node), ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding),
+      ipid::GetAspectRatioString(style.LogicalAspectRatio()),
+      (style.BoxSizingForAspectRatio() == EBoxSizing::kContentBox
+           ? "content-box"
+           : "border-box"));
+
+  ipid_depth_log.FPrint(
+      "步骤1：调用 ComputeInitialMinMaxBlockSizes 计算元素的高度约束。");
   const MinMaxSizes block_min_max =
       ComputeInitialMinMaxBlockSizes(constraint_space, node, border_padding);
-  return ComputeTransferredMinMaxInlineSizes(style.LogicalAspectRatio(),
-                                             block_min_max, border_padding,
-                                             style.BoxSizingForAspectRatio());
+  ipid_depth_log.FPrint("计算得到的高度约束：{}", 
+                        ipid::GetMinMaxSizesString(block_min_max));
+
+  ipid_depth_log.FPrint(
+      "步骤2：调用 ComputeTransferredMinMaxInlineSizes 通过 aspect-ratio "
+      "从高度约束转换为宽度约束。");
+  MinMaxSizes result = ComputeTransferredMinMaxInlineSizes(
+      style.LogicalAspectRatio(), block_min_max, border_padding,
+      style.BoxSizingForAspectRatio());
+
+  ipid_depth_log.FPrint(
+      "从 aspect-ratio 计算得到的最终宽度约束：{}\n"
+      "- 最小宽度约束：{}px\n"
+      "- 最大宽度约束：{}px",
+      ipid::GetMinMaxSizesString(result), result.min_size, result.max_size);
+
+  return result;
 }
 
 MinMaxSizes ComputeMinMaxInlineSizes(
@@ -769,7 +1643,33 @@ MinMaxSizes ComputeMinMaxInlineSizes(
     TransferredSizesMode transferred_sizes_mode,
     FitContentMode fit_content_mode,
     LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeMinMaxInlineSizes");
+
   const ComputedStyle& style = node.Style();
+
+  ipid_depth_log.FPrint(
+      "正在计算元素 {} 的宽度约束 (min-width/max-width)。\n"
+      "开辟的空间：{}\n"
+      "元素 border+padding 值：{}\n"
+      "CSS min-width 属性：{}\n"
+      "CSS max-width 属性：{}\n"
+      "transferred_sizes_mode：{}\n"
+      "fit_content_mode：{}",
+      ipid::GetNodeStr(node), ipid::GetConstraintSpaceString(space),
+      ipid::GetBoxStrutString(border_padding), style.LogicalMinWidth(),
+      style.LogicalMaxWidth(),
+      (transferred_sizes_mode == TransferredSizesMode::kNormal ? "kNormal"
+                                                               : "kIgnore"),
+      ipid::GetFitContentModeString(fit_content_mode));
+
+  if (auto_min_length) {
+    ipid_depth_log.FPrint("若 min-width 为 auto，兜底为此值：{}",
+                          *auto_min_length);
+  }
+
+  ipid_depth_log.FPrint(
+      "步骤1：解析 CSS min-width 和 max-width 属性为像素值。");
+
   MinMaxSizes sizes = {
       ResolveMinInlineLength(space, style, border_padding, min_max_sizes_func,
                              style.LogicalMinWidth(), auto_min_length,
@@ -778,9 +1678,26 @@ MinMaxSizes ComputeMinMaxInlineSizes(
                              style.LogicalMaxWidth(), override_available_size,
                              fit_content_mode)};
 
+  ipid_depth_log.FPrint(
+      "CSS min-width 解析结果：{}px\n"
+      "CSS max-width 解析结果：{}px\n"
+      "初始的宽度约束为：{}",
+      sizes.min_size, sizes.max_size, ipid::GetMinMaxSizesString(sizes));
+
   // Clamp the auto min-size by the max-size.
   if (auto_min_length && style.LogicalMinWidth().HasAuto()) {
+    ipid_depth_log.FPrint(
+        "步骤2：min-width 为 auto 且传入了 auto_min_length 兜底值，需要将 "
+        "min-width 限制为不超过 max-width 。\n"
+        "限制前：min-width = {}px\n"
+        "max-width = {}px",
+        sizes.min_size, sizes.max_size);
     sizes.min_size = std::min(sizes.min_size, sizes.max_size);
+    ipid_depth_log.FPrint("限制后：min-width = {}px", sizes.min_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "步骤2：跳过 auto min-width 限制（min-width 不为 auto "
+        "或未传入兜底值）。");
   }
 
   // This implements the transferred min/max sizes per:
@@ -788,19 +1705,85 @@ MinMaxSizes ComputeMinMaxInlineSizes(
   if (transferred_sizes_mode == TransferredSizesMode::kNormal &&
       !style.AspectRatio().IsAuto() && style.LogicalWidth().HasAuto() &&
       space.InlineAutoBehavior() != AutoSizeBehavior::kStretchExplicit) {
+    ipid_depth_log.FPrint(
+        "步骤3：检测到满足 aspect-ratio 宽度约束转换条件：\n"
+        "- transferred_sizes_mode = kNormal\n"
+        "- aspect-ratio = {}\n"
+        "- CSS width 为 auto\n"
+        "- InlineAutoBehavior != kStretchExplicit\n"
+        "正在调用 ComputeMinMaxInlineSizesFromAspectRatio 计算从 aspect-ratio "
+        "转换而来的宽度约束。",
+        ipid::GetAspectRatioString(style.LogicalAspectRatio()));
+
     MinMaxSizes transferred_sizes =
         ComputeMinMaxInlineSizesFromAspectRatio(space, node, border_padding);
+
+    ipid_depth_log.FPrint(
+        "从 aspect-ratio 计算得到的宽度约束：{}\n"
+        "当前的宽度约束：{}\n"
+        "现在将两者合并：\n"
+        "- 新的 min-width = max(当前最小宽度, min(转换最小宽度, "
+        "当前最大宽度))\n"
+        "- 新的 max-width = min(当前最大宽度, 转换最大宽度)",
+        ipid::GetMinMaxSizesString(transferred_sizes),
+        ipid::GetMinMaxSizesString(sizes));
+
+    LayoutUnit old_min = sizes.min_size;
+    LayoutUnit old_max = sizes.max_size;
+
     sizes.min_size = std::max(
         sizes.min_size, std::min(transferred_sizes.min_size, sizes.max_size));
     sizes.max_size = std::min(sizes.max_size, transferred_sizes.max_size);
+
+    ipid_depth_log.FPrint(
+        "合并后的宽度约束：{}\n"
+        " min-width 从 {}px 变为 {}px\n"
+        " max-width 从 {}px 变为 {}px",
+        ipid::GetMinMaxSizesString(sizes), old_min, sizes.min_size, old_max,
+        sizes.max_size);
+  } else {
+    ipid_depth_log.FPrint(
+        "步骤3：跳过 aspect-ratio 宽度约束转换（不满足转换条件）。\n"
+        "- transferred_sizes_mode = {}\n"
+        "- aspect-ratio.IsAuto() = {}\n"
+        "- width.HasAuto() = {}\n"
+        "- InlineAutoBehavior = {}",
+        (transferred_sizes_mode == TransferredSizesMode::kNormal ? "kNormal"
+                                                                 : "kIgnore"),
+        ipid::btos(style.AspectRatio().IsAuto()),
+        ipid::btos(style.LogicalWidth().HasAuto()),
+        ipid::GetAutoSizeBehaviorString(space.InlineAutoBehavior()));
   }
 
   // Tables can't shrink below their min-intrinsic size.
   if (node.IsTable()) {
-    sizes.Encompass(min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size);
+    ipid_depth_log.FPrint(
+        "步骤4：检测到 table 元素，需要确保宽度约束不会小于其最小固有尺寸。");
+    LayoutUnit table_min_intrinsic =
+        min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size;
+    ipid_depth_log.FPrint(
+        "table 元素的最小固有尺寸：{}px\n"
+        "应用前的宽度约束：{}",
+        table_min_intrinsic, ipid::GetMinMaxSizesString(sizes));
+    sizes.Encompass(table_min_intrinsic);
+    ipid_depth_log.FPrint("应用后的宽度约束：{}",
+                          ipid::GetMinMaxSizesString(sizes));
+  } else {
+    ipid_depth_log.FPrint("步骤4：跳过 table 特殊处理（非 table 元素）。");
   }
 
+  ipid_depth_log.FPrint(
+      "步骤5：确保 max-width 不小于 min-width （符合 CSS 规范要求）。\n"
+      "调整前：{}",
+      ipid::GetMinMaxSizesString(sizes));
   sizes.max_size = std::max(sizes.max_size, sizes.min_size);
+
+  ipid_depth_log.FPrint(
+      "最终的宽度约束结果：{}\n"
+      "- min-width ：{}px\n"
+      "- max-width ：{}px",
+      ipid::GetMinMaxSizesString(sizes), sizes.min_size, sizes.max_size);
+
   return sizes;
 }
 
@@ -814,15 +1797,41 @@ LayoutUnit ComputeBlockSizeForFragmentInternal(
     LayoutUnit intrinsic_size,
     LayoutUnit inline_size,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: ComputeBlockSizeForFragmentInternal");
+
   const ComputedStyle& style = node.Style();
+
+  ipid_depth_log.FPrint(
+      "开始计算元素 {} 的高度，忽略固定高度设置。\n"
+      "开辟的空间：{}\n"
+      "当前元素的 border+padding：{}\n"
+      "固有高度（通常为内容高度）：{}\n"
+      "宽度值（用于 aspect-ratio 计算）：{}",
+      ipid::GetNodeStr(node), ipid::GetConstraintSpaceString(space),
+      ipid::GetBoxStrutString(border_padding), intrinsic_size, inline_size);
+
+  if (override_available_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "上游传入了 override_available_size: "
+        "{}，这通常用于特殊布局算法（如表格）。",
+        override_available_size);
+  }
 
   // Scrollable percentage-sized children of table cells (sometimes) are sized
   // to their initial min-size.
   // See: https://drafts.csswg.org/css-tables-3/#row-layout
   if (space.IsRestrictedBlockSizeTableCellChild()) {
-    return ResolveInitialMinBlockLength(space, style, border_padding,
-                                        style.LogicalMinHeight(),
-                                        override_available_size);
+    ipid_depth_log.FPrint(
+        "[特殊情况] 检测到当前元素为表格单元格的子元素，且存在高度约束限制。"
+        "根据 CSS 表格规范，这种情况下将使用初始最小高度进行计算。\n"
+        "当前元素的 min-height 值为：{}",
+        style.LogicalMinHeight());
+    LayoutUnit result = ResolveInitialMinBlockLength(
+        space, style, border_padding, style.LogicalMinHeight(),
+        override_available_size);
+    ipid_depth_log.FPrint("表格单元格子元素的高度计算结果：{}", result);
+    return result;
   }
 
   const Length& logical_height = style.LogicalHeight();
@@ -830,63 +1839,134 @@ LayoutUnit ComputeBlockSizeForFragmentInternal(
   const bool may_apply_aspect_ratio =
       has_aspect_ratio && inline_size != kIndefiniteSize;
 
+  ipid_depth_log.FPrint(
+      "读取元素的 CSS 高度设置：{}\n"
+      "检查是否有 aspect-ratio：{}\n"
+      "是否可以应用 aspect-ratio：{}",
+      logical_height, has_aspect_ratio ? "是" : "否",
+      may_apply_aspect_ratio ? "是（有 aspect-ratio 且宽度已确定）" : "否");
+
+  ipid_depth_log.FPrint(
+      "开始确定当高度为 auto 时的兜底行为。\n"
+      "当前开辟空间的可用高度：{}\n"
+      "当前空间的 BlockAutoBehavior：{}",
+      space.AvailableSize().block_size,
+      ipid::GetAutoSizeBehaviorString(space.BlockAutoBehavior()));
+
   const Length& auto_length = ([&]() {
     if (space.AvailableSize().block_size == kIndefiniteSize) {
+      ipid_depth_log.FPrint(
+          "可用高度为不明确值 (-1)，因此 auto 高度兜底为 fit-content。");
       return Length::FitContent();
     }
     if (space.BlockAutoBehavior() == AutoSizeBehavior::kStretchExplicit) {
+      ipid_depth_log.FPrint(
+          "空间要求明确拉伸到可用高度，因此 auto 高度兜底为 stretch。");
       return Length::Stretch();
     }
     if (may_apply_aspect_ratio) {
+      ipid_depth_log.FPrint(
+          "由于存在 aspect-ratio 且宽度已确定，为保持比例，auto 高度兜底为 "
+          "fit-content。");
       return Length::FitContent();
     }
     if (space.BlockAutoBehavior() == AutoSizeBehavior::kStretchImplicit) {
+      ipid_depth_log.FPrint(
+          "空间要求隐式拉伸到可用高度，因此 auto 高度兜底为 stretch。");
       return Length::Stretch();
     }
     DCHECK_EQ(space.BlockAutoBehavior(), AutoSizeBehavior::kFitContent);
+    ipid_depth_log.FPrint("默认情况下，auto 高度兜底为 fit-content。");
     return Length::FitContent();
   })();
 
+  ipid_depth_log.FPrint("确定的 auto 高度兜底行为：{}", auto_length);
+
   // Check if we should apply the automatic minimum size.
   // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-minimum
+  ipid_depth_log.FPrint(
+      "检查是否需要应用 aspect-ratio 的自动min-height。\n"
+      "根据 CSS 规范，当元素有 aspect-ratio "
+      "且满足特定条件时，需要应用自动最小高度。");
+
   bool apply_automatic_min_size = ([&]() {
     // We check for LayoutUnit::Max() as flexbox uses this as a "placeholder"
     // to compute the flex line length while still respecting max-block-size.
     if (intrinsic_size == kIndefiniteSize ||
         intrinsic_size == LayoutUnit::Max()) {
+      ipid_depth_log.FPrint(
+          "固有高度为不明确值或 Max 值（Flexbox "
+          "占位符），不应用自动最小高度。");
       return false;
     }
     if (style.IsScrollContainer()) {
+      ipid_depth_log.FPrint("当前元素为滚动容器，不应用自动最小高度。");
       return false;
     }
     if (!may_apply_aspect_ratio) {
+      ipid_depth_log.FPrint(
+          "无法应用 "
+          "aspect-ratio（没有比例或宽度不明确），不应用自动最小高度。");
       return false;
     }
     if (logical_height.HasContentOrIntrinsic()) {
+      ipid_depth_log.FPrint(
+          "CSS 高度值包含 content 或 intrinsic 关键字，应用自动最小高度。");
       return true;
     }
     if (logical_height.HasAuto() && auto_length.HasContentOrIntrinsic()) {
+      ipid_depth_log.FPrint(
+          "CSS 高度为 auto 且兜底值包含 content 或 "
+          "intrinsic，应用自动最小高度。");
       return true;
     }
+    ipid_depth_log.FPrint("不满足应用自动最小高度的条件。");
     return false;
   })();
+
+  ipid_depth_log.FPrint("是否应用自动最小高度：{}",
+                        apply_automatic_min_size ? "是" : "否");
+
+  ipid_depth_log.FPrint("定义高度计算函数，用于在需要固有尺寸时提供高度值。");
 
   auto BlockSizeFunc = [&](SizeType type) {
     if (type == SizeType::kContent && has_aspect_ratio &&
         inline_size != kIndefiniteSize) {
-      return BlockSizeFromAspectRatio(
+      ipid_depth_log.FPrint(
+          "需要计算 content 高度且有 aspect-ratio，从 aspect-ratio 计算高度。\n"
+          "aspect-ratio：{}\n"
+          "宽度：{}",
+          ipid::GetLogicalSizeString(style.LogicalAspectRatio()), inline_size);
+      LayoutUnit result = BlockSizeFromAspectRatio(
           border_padding, style.LogicalAspectRatio(),
           style.BoxSizingForAspectRatio(), inline_size);
+      ipid_depth_log.FPrint("从 aspect-ratio 计算得到的高度：{}", result);
+      return result;
     }
+    ipid_depth_log.FPrint("使用预设的固有高度：{}", intrinsic_size);
     return intrinsic_size;
   };
+
+  ipid_depth_log.FPrint("开始解析主要高度值（即 CSS height 属性）。");
 
   const LayoutUnit extent = ResolveMainBlockLength(
       space, style, border_padding, logical_height, &auto_length, BlockSizeFunc,
       override_available_size);
+
+  ipid_depth_log.FPrint("主要高度解析结果：{}", extent);
+
   if (extent == kIndefiniteSize) {
     DCHECK_EQ(intrinsic_size, kIndefiniteSize);
+    ipid_depth_log.FPrint(
+        "主要高度为不明确值 (-1)，无法计算确定的高度，直接返回不明确值。");
     return extent;
+  }
+
+  ipid_depth_log.FPrint("计算 min-height 和 max-height 的约束范围。");
+
+  if (apply_automatic_min_size) {
+    ipid_depth_log.FPrint(
+        "由于需要应用自动最小高度，将使用 min-intrinsic 作为自动 min-height。");
   }
 
   MinMaxSizes min_max = ComputeMinMaxBlockSizes(
@@ -894,13 +1974,33 @@ LayoutUnit ComputeBlockSizeForFragmentInternal(
       apply_automatic_min_size ? &Length::MinIntrinsic() : nullptr,
       BlockSizeFunc, override_available_size);
 
+  ipid_depth_log.FPrint("计算得到的高度约束范围：{}",
+                        ipid::GetMinMaxSizesString(min_max));
+
   // When fragmentation is present often want to encompass the intrinsic size.
   if (space.MinBlockSizeShouldEncompassIntrinsicSize() &&
       intrinsic_size != kIndefiniteSize) {
-    min_max.Encompass(std::min(intrinsic_size, min_max.max_size));
+    ipid_depth_log.FPrint(
+        "[分片场景] 需要确保最小高度包含固有高度。\n"
+        "固有高度：{}\n"
+        "当前最大高度：{}\n"
+        "将使用两者的较小值来更新min-height。",
+        intrinsic_size, min_max.max_size);
+    LayoutUnit encompass_size = std::min(intrinsic_size, min_max.max_size);
+    min_max.Encompass(encompass_size);
+    ipid_depth_log.FPrint("更新后的高度约束范围：{}",
+                          ipid::GetMinMaxSizesString(min_max));
   }
 
-  return min_max.ClampSizeToMinAndMax(extent);
+  ipid_depth_log.FPrint(
+      "将主要高度 {} 限制在 min-height 和 max-height 约束范围内。", extent);
+
+  LayoutUnit final_size = min_max.ClampSizeToMinAndMax(extent);
+
+  ipid_depth_log.FPrint("元素 {} 的最终高度计算结果：{}",
+                        ipid::GetNodeStr(node), final_size);
+
+  return final_size;
 }
 
 }  // namespace
@@ -911,27 +2011,92 @@ LayoutUnit ComputeBlockSizeForFragment(const ConstraintSpace& constraint_space,
                                        LayoutUnit intrinsic_size,
                                        LayoutUnit inline_size,
                                        LayoutUnit override_available_size) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: ComputeBlockSizeForFragment");
+
+  ipid_depth_log.FPrint(
+      "开始计算元素 {} 的片段高度（外层入口函数）。\n"
+      "开辟的空间：{}\n"
+      "当前元素的 border+padding：{}\n"
+      "固有高度（通常为内容高度）：{}\n"
+      "宽度值（用于 aspect-ratio 计算）：{}",
+      ipid::GetNodeStr(node), ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding), intrinsic_size, inline_size);
+
+  if (override_available_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "上游传入了 override_available_size: "
+        "{}，这通常用于特殊元素（如表格）。",
+        override_available_size);
+  }
+
   // The |override_available_size| should only be used for <table>s.
   DCHECK(override_available_size == kIndefiniteSize || node.IsTable());
 
   if (constraint_space.IsFixedBlockSize()) {
+    ipid_depth_log.FPrint(
+        "[快捷路径 1] 当前的 ConstraintSpace "
+        "要求子元素必须使用固定高度（这种情况一般发生在 flex、grid "
+        "布局中，例如设置了 align-items: stretch "
+        "的情况），此时无需进行复杂的高度计算。\n");
+
     LayoutUnit block_size = override_available_size == kIndefiniteSize
                                 ? constraint_space.AvailableSize().block_size
                                 : override_available_size;
-    if (constraint_space.MinBlockSizeShouldEncompassIntrinsicSize())
-      return std::max(intrinsic_size, block_size);
+
+    if (override_available_size == kIndefiniteSize) {
+      ipid_depth_log.FPrint("使用约束空间中的固定高度：{}", block_size);
+    } else {
+      ipid_depth_log.FPrint(
+          "使用上游传入的 override_available_size 作为固定高度：{}",
+          block_size);
+    }
+
+    if (constraint_space.MinBlockSizeShouldEncompassIntrinsicSize()) {
+      ipid_depth_log.FPrint(
+          "[分片场景] 需要确保高度至少包含固有高度 {}，\n"
+          "最终高度为固定高度 {} 和固有高度的较大值。",
+          intrinsic_size, block_size);
+      LayoutUnit result = std::max(intrinsic_size, block_size);
+      ipid_depth_log.FPrint("固定高度计算结果：{}", result);
+      return result;
+    }
+
+    ipid_depth_log.FPrint("固定高度计算结果：{}", block_size);
     return block_size;
   }
 
-  if (constraint_space.IsTableCell() && intrinsic_size != kIndefiniteSize)
+  if (constraint_space.IsTableCell() && intrinsic_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "[快捷路径 2] 当前元素为表格单元格且有明确的固有高度 {}。\n"
+        "根据 CSS 表格布局规范，表格单元格应直接使用其固有高度。",
+        intrinsic_size);
     return intrinsic_size;
+  }
 
-  if (constraint_space.IsAnonymous())
+  if (constraint_space.IsAnonymous()) {
+    ipid_depth_log.FPrint(
+        "[快捷路径 3] 当前元素为匿名盒子，直接使用固有高度 {}。\n"
+        "匿名盒子是浏览器内部生成的辅助元素，通常不需要复杂的高度计算。",
+        intrinsic_size);
     return intrinsic_size;
+  }
 
-  return ComputeBlockSizeForFragmentInternal(
+  ipid_depth_log.FPrint(
+      "当前 ConstraintSpace "
+      "没有要求必须使用固定的高度；当前的元素也不是表格单元格，或者就算是也没有"
+      "明确的固有高度；"
+      "也不是匿名盒子。上述情况可以跳过计算，但若上述条件都不满足，只能调用 "
+      "ComputeBlockSizeForFragmentInternal "
+      "进行完整的高度解析流程。");
+
+  LayoutUnit result = ComputeBlockSizeForFragmentInternal(
       constraint_space, node, border_padding, intrinsic_size, inline_size,
       override_available_size);
+
+  ipid_depth_log.FPrint("元素 {} 的片段高度计算完成，最终结果：{}",
+                        ipid::GetNodeStr(node), result);
+
+  return result;
 }
 
 LayoutUnit ComputeInitialBlockSizeForFragment(
@@ -1647,6 +2812,9 @@ FragmentGeometry CalculateInitialFragmentGeometry(
     const BlockBreakToken* break_token,
     MinMaxSizesFunctionRef min_max_sizes_func,
     bool is_intrinsic) {
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: CalculateInitialFragmentGeometry");
+  std::string node_str = ipid::GetNodeStr(node);
   const auto& style = node.Style();
 
   if (node.IsFrameSet()) {
@@ -1663,29 +2831,57 @@ FragmentGeometry CalculateInitialFragmentGeometry(
     return {ToLogicalSize(size, style.GetWritingMode()), {}, {}, {}};
   }
 
+  ipid_depth_log.FPrint("正在计算元素 {} 的 border 尺寸。", node_str);
   const auto border = ComputeBorders(space, node);
+  ipid_depth_log.FPrint("border 尺寸为 {}\n\n正在计算元素 {} 的 padding 尺寸。",
+                        ipid::GetBoxStrutString(border), node_str);
   const auto padding = ComputePadding(space, style);
+  ipid_depth_log.FPrint(
+      "padding 尺寸为 {}\n\n正在计算元素 {} 的滚动条所占空间。",
+      ipid::GetBoxStrutString(padding), node_str);
   auto scrollbar = ComputeScrollbars(space, node);
+  ipid_depth_log.FPrint("滚动条所占空间为 {}",
+                        ipid::GetBoxStrutString(scrollbar));
 
   const auto border_padding = border + padding;
   const auto border_scrollbar_padding = border_padding + scrollbar;
 
   if (node.IsReplaced()) {
+    ipid_depth_log.FPrint(
+        "元素 {} 是替换元素，正在调用 ComputeReplacedSize 计算其 border-box "
+        "的尺寸。",
+        node_str);
     const auto border_box_size = ComputeReplacedSize(
         node, space, border_padding,
         is_intrinsic ? ReplacedSizeMode::kIgnoreInlineLengths
                      : ReplacedSizeMode::kNormal);
+    ipid_depth_log.FPrint("替换元素 {} 的 border-box 的尺寸为 {}", node_str,
+                          border_box_size);
     return {border_box_size, border, scrollbar, padding};
   }
 
+  ipid_depth_log.FPrint(
+      "正在调用 ComputeInlineSizeForFragment 计算元素 {} 的宽度。", node_str);
   const LayoutUnit inline_size =
       is_intrinsic ? kIndefiniteSize
                    : ComputeInlineSizeForFragment(space, node, border_padding,
                                                   min_max_sizes_func);
 
+  if (is_intrinsic) {
+    ipid_depth_log.FPrint("当前为固有尺寸计算模式，宽度设为不确定值 (-1)。");
+  } else {
+    ipid_depth_log.FPrint("ComputeInlineSizeForFragment 返回的宽度为：{}px",
+                          inline_size);
+  }
+
   if (inline_size != kIndefiniteSize &&
       inline_size < border_scrollbar_padding.InlineSum() &&
       scrollbar.InlineSum() && !space.IsAnonymous()) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "[特殊情况] 检测到宽度 ({}px) 小于 border+scrollbar+padding "
+        "({}px)，且有滚动条且非匿名空间，需要调整滚动条尺寸以防止布局问题。",
+        inline_size, border_scrollbar_padding.InlineSum());
+
     // Clamp the inline size of the scrollbar, unless it's larger than the
     // inline size of the content box, in which case we'll return that instead.
     // Scrollbar handling is quite bad in such situations, and this method here
@@ -1693,21 +2889,52 @@ FragmentGeometry CalculateInitialFragmentGeometry(
     // For the full story, visit http://crbug.com/724255.
     const auto content_box_inline_size =
         inline_size - border_padding.InlineSum();
+
+    ipid_depth_log.FPrint("内容盒子的宽度为：{}px", content_box_inline_size);
+
     if (scrollbar.InlineSum() > content_box_inline_size) {
+      ipid_depth_log.FPrint(
+          "滚动条尺寸 ({}px) 大于内容盒子宽度 ({}px)，需要缩小滚动条。",
+          scrollbar.InlineSum(), content_box_inline_size);
+
       if (scrollbar.inline_end) {
         DCHECK(!scrollbar.inline_start);
+        ipid_depth_log.FPrint("调整右侧滚动条从 {}px 到 {}px",
+                              scrollbar.inline_end, content_box_inline_size);
         scrollbar.inline_end = content_box_inline_size;
       } else {
         DCHECK(scrollbar.inline_start);
+        ipid_depth_log.FPrint("调整左侧滚动条从 {}px 到 {}px",
+                              scrollbar.inline_start, content_box_inline_size);
         scrollbar.inline_start = content_box_inline_size;
       }
+    } else {
+      ipid_depth_log.FPrint("滚动条尺寸在合理范围内，无需调整。");
     }
   }
 
+  ipid_depth_log.FPrint("正在调用 CalculateDefaultBlockSize 计算默认高度。");
   const auto default_block_size = CalculateDefaultBlockSize(
       space, node, break_token, border_scrollbar_padding);
+  ipid_depth_log.FPrint("默认高度为：{}", default_block_size);
+
+  ipid_depth_log.FPrint(
+      "正在调用 ComputeInitialBlockSizeForFragment 计算最终高度。\n"
+      "传入的宽度为：{}px\n"
+      "传入的默认高度为：{}px",
+      inline_size, default_block_size);
   const auto block_size = ComputeInitialBlockSizeForFragment(
       space, node, border_padding, default_block_size, inline_size);
+  ipid_depth_log.FPrint("计算得到的最终高度为：{}px", block_size);
+
+  ipid_depth_log.FPrint(
+      "元素 {} 的初始尺寸（FragmentGeometry）计算完成：\n"
+      "- 尺寸：宽度 {}px，高度 {}px\n"
+      "- border：{}\n"
+      "- scrollbar：{}\n"
+      "- padding：{}",
+      node_str, inline_size, block_size, ipid::GetBoxStrutString(border),
+      ipid::GetBoxStrutString(scrollbar), ipid::GetBoxStrutString(padding));
 
   return {LogicalSize(inline_size, block_size), border, scrollbar, padding};
 }
@@ -1743,14 +2970,40 @@ LogicalSize CalculateChildAvailableSize(
     const BlockNode& node,
     const LogicalSize border_box_size,
     const BoxStrut& border_scrollbar_padding) {
+  IpidDepthLog ipid_depth_log("length_utils.cc: CalculateChildAvailableSize");
+  std::string ipid_node_str = ipid::GetNodeStr(node);
+  ipid_depth_log.FPrint(
+      "正在计算子元素的可用尺寸。\n"
+      "父容器约束空间：{}\n"
+      "子元素：{}\n"
+      "子元素的 border-box 尺寸：{}\n"
+      "子元素的 border+scrollbar+padding 尺寸：{}",
+      ipid::GetConstraintSpaceString(space), ipid_node_str,
+      ipid::GetLogicalSizeString(border_box_size),
+      ipid::GetBoxStrutString(border_scrollbar_padding));
+
   LogicalSize child_available_size =
       ShrinkLogicalSize(border_box_size, border_scrollbar_padding);
+
+  ipid_depth_log.FPrint(
+      "我们需要将子元素 {} 的 border-box 尺寸减去其 border、滚动条和 padding "
+      "尺寸。减去后，得到的子元素的可用尺寸为：{}",
+      ipid_node_str, ipid::GetLogicalSizeString(child_available_size));
 
   if (space.IsAnonymous() ||
       (node.IsAnonymousBlockFlow() &&
        child_available_size.block_size == kIndefiniteSize)) {
+    ipid_depth_log.FPrint(
+        "由于节点 {} "
+        "为匿名节点，且当前计算的可用尺寸中的高度为不确定值（-"
+        "1），此时我们将可用尺寸的高度值直接设为当前 ConstraintSpace "
+        "的可用高度 {}px。",
+        ipid_node_str, space.AvailableSize().block_size);
     child_available_size.block_size = space.AvailableSize().block_size;
   }
+
+  ipid_depth_log.FPrint("最终计算得到的子元素的可用尺寸为：{}",
+                        ipid::GetLogicalSizeString(child_available_size));
 
   return child_available_size;
 }
@@ -1872,12 +3125,25 @@ LayoutUnit ClampIntrinsicBlockSize(
 std::optional<MinMaxSizesResult> CalculateMinMaxSizesIgnoringChildren(
     const BlockNode& node,
     const BoxStrut& border_scrollbar_padding) {
+  std::string ipid_node_str = ipid::GetNodeStr(node);
+  IpidDepthLog ipid_depth_log(
+      "length_utils.cc: CalculateMinMaxSizesIgnoringChildren");
+  ipid_depth_log.FPrint(
+      "正在判断元素 {} 是否必须在不考虑子元素的情况下计算固有尺寸。\n元素的 "
+      "border+scrollbar+padding 尺寸为：{}",
+      ipid_node_str, ipid::GetBoxStrutString(border_scrollbar_padding));
+
   MinMaxSizes sizes;
   sizes += border_scrollbar_padding.InlineSum();
 
   // Check if the intrinsic size was overridden.
   const LayoutUnit override_size = node.OverrideIntrinsicContentInlineSize();
   if (override_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "元素 {} 设置了 OverrideIntrinsicContentInlineSize = "
+        "{}，导致其固有宽度 = (border + 滚动条 + padding){} + "
+        "OverrideIntrinsicContentInlineSize，不依赖子元素。",
+        ipid_node_str, override_size, border_scrollbar_padding.InlineSum());
     sizes += override_size;
     return MinMaxSizesResult{sizes, /* depends_on_block_constraints */ false};
   }
@@ -1885,6 +3151,12 @@ std::optional<MinMaxSizesResult> CalculateMinMaxSizesIgnoringChildren(
   // Check if we have a "default" size (a <textarea>).
   const LayoutUnit default_size = node.DefaultIntrinsicContentInlineSize();
   if (default_size != kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "元素 {} 设置了 DefaultIntrinsicContentInlineSize = "
+        "{}（例如 textarea 等），导致其固有宽度 = (border + 滚动条 + "
+        "padding){} + "
+        "DefaultIntrinsicContentInlineSize，不依赖子元素。",
+        ipid_node_str, default_size, border_scrollbar_padding.InlineSum());
     sizes += default_size;
     // <textarea>'s intrinsic size should ignore scrollbar existence.
     if (node.IsTextArea()) {
@@ -1897,10 +3169,16 @@ std::optional<MinMaxSizesResult> CalculateMinMaxSizesIgnoringChildren(
   // Size contained elements don't consider children for intrinsic sizing.
   // Also, if we don't have children, we can determine the size immediately.
   if (node.ShouldApplyInlineSizeContainment() || !node.FirstChild()) {
+    ipid_depth_log.FPrint(
+        "元素 {} 根本没有子元素，或者其设置了 contain: size，"
+        "导致其固有宽度 = (border + 滚动条 + padding){}，不依赖子元素。",
+        ipid_node_str, border_scrollbar_padding.InlineSum());
     return MinMaxSizesResult{sizes,
                              /* depends_on_block_constraints */ false};
   }
 
+  ipid_depth_log.FPrint("元素 {} 的固有宽度不能独立计算，必须依赖其子元素。",
+                        ipid_node_str);
   return std::nullopt;
 }
 

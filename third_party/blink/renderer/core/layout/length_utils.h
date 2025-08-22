@@ -22,6 +22,11 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 class ComputedStyle;
@@ -117,10 +122,35 @@ inline LayoutUnit ResolveMinInlineLength(
     const Length* auto_length = nullptr,
     LayoutUnit override_available_size = kIndefiniteSize,
     FitContentMode fit_content_mode = FitContentMode::kNormal) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMinInlineLength");
+  ipid_depth_log.FPrint(
+      "正在将宽度值解析为像素值（场景：计算最小宽度）。\n"
+      "待解析的宽度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  if (auto_length) {
+    ipid_depth_log.FPrint("若宽度为 auto，兜底为此值：{}", *auto_length);
+  }
+  ipid_depth_log.FPrint("接下来调用 ResolveInlineLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveInlineLengthInternal(
       constraint_space, style, border_padding, min_max_sizes_func, length,
       auto_length, LengthTypeInternal::kMin, fit_content_mode,
       override_available_size, CalcSizeKeywordBehavior::kAsSpecified);
+
+  ipid_depth_log.FPrint("ResolveInlineLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算最小宽度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为 border+padding 的横向值 {}px。因此，本函数最终返回 "
+        "{}。",
+        border_padding.InlineSum(), border_padding.InlineSum());
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? border_padding.InlineSum() : result;
 }
 
@@ -133,10 +163,30 @@ inline LayoutUnit ResolveMaxInlineLength(
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize,
     FitContentMode fit_content_mode = FitContentMode::kNormal) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMaxInlineLength");
+  ipid_depth_log.FPrint(
+      "正在将宽度值解析为像素值（场景：计算最大宽度）。\n"
+      "待解析的宽度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  ipid_depth_log.FPrint("接下来调用 ResolveInlineLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveInlineLengthInternal(
       constraint_space, style, border_padding, min_max_sizes_func, length,
       /* auto_length */ nullptr, LengthTypeInternal::kMax, fit_content_mode,
       override_available_size, CalcSizeKeywordBehavior::kAsSpecified);
+
+  ipid_depth_log.FPrint("ResolveInlineLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算最大宽度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为无穷大（表示无最大宽度限制）。因此，本函数最终返回无穷大。");
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 
@@ -151,10 +201,27 @@ inline LayoutUnit ResolveMainInlineLength(
     LayoutUnit override_available_size = kIndefiniteSize,
     CalcSizeKeywordBehavior calc_size_keyword_behavior =
         CalcSizeKeywordBehavior::kAsSpecified) {
-  return ResolveInlineLengthInternal(
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMainInlineLength");
+  ipid_depth_log.FPrint(
+      "正在将宽度值解析为像素值（场景：计算主要宽度）。\n"
+      "待解析的宽度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  if (auto_length) {
+    ipid_depth_log.FPrint("若宽度为 auto，兜底为此值：{}", *auto_length);
+  }
+  ipid_depth_log.FPrint("接下来调用 ResolveInlineLengthInternal 来进行解析。");
+
+  const LayoutUnit result = ResolveInlineLengthInternal(
       constraint_space, style, border_padding, min_max_sizes_func, length,
       auto_length, LengthTypeInternal::kMain, FitContentMode::kNormal,
       override_available_size, calc_size_keyword_behavior);
+
+  ipid_depth_log.FPrint("最终解析结果为：{}", result);
+
+  return result;
 }
 
 // Used for resolving min block lengths, (|ComputedStyle::MinLogicalHeight|).
@@ -164,12 +231,34 @@ inline LayoutUnit ResolveInitialMinBlockLength(
     const BoxStrut& border_padding,
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveInitialMinBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算初始最小高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMin,
       override_available_size,
       /* override_percentage_resolution_size */ nullptr,
       [](SizeType) { return kIndefiniteSize; });
+
+  ipid_depth_log.FPrint("ResolveBlockLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算初始最小高度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为 border+padding 的纵向值 {}px。因此，本函数最终返回 "
+        "{}。",
+        border_padding.BlockSum(), border_padding.BlockSum());
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? border_padding.BlockSum() : result;
 }
 inline LayoutUnit ResolveMinBlockLength(
@@ -181,10 +270,35 @@ inline LayoutUnit ResolveMinBlockLength(
     const Length* auto_length = nullptr,
     LayoutUnit override_available_size = kIndefiniteSize,
     const LayoutUnit* override_percentage_resolution_size = nullptr) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMinBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算最小高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  if (auto_length) {
+    ipid_depth_log.FPrint("若高度为 auto，兜底为此值：{}", *auto_length);
+  }
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length, auto_length,
       LengthTypeInternal::kMin, override_available_size,
       override_percentage_resolution_size, block_size_func);
+
+  ipid_depth_log.FPrint("ResolveBlockLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算最小高度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为 border+padding 的纵向值 {}px。因此，本函数最终返回 "
+        "{}。",
+        border_padding.BlockSum(), border_padding.BlockSum());
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? border_padding.BlockSum() : result;
 }
 
@@ -195,12 +309,32 @@ inline LayoutUnit ResolveInitialMaxBlockLength(
     const BoxStrut& border_padding,
     const Length& length,
     LayoutUnit override_available_size = kIndefiniteSize) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveInitialMaxBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算初始最大高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMax,
       override_available_size,
       /* override_percentage_resolution_size */ nullptr,
       [](SizeType) { return kIndefiniteSize; });
+
+  ipid_depth_log.FPrint("ResolveBlockLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算初始最大高度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为无穷大（表示无最大高度限制）。因此，本函数最终返回无穷大。");
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 inline LayoutUnit ResolveMaxBlockLength(
@@ -211,11 +345,31 @@ inline LayoutUnit ResolveMaxBlockLength(
     BlockSizeFunctionRef block_size_func,
     LayoutUnit override_available_size = kIndefiniteSize,
     const LayoutUnit* override_percentage_resolution_size = nullptr) {
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMaxBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算最大高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
   const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length,
       /* auto_length */ &Length::Auto(), LengthTypeInternal::kMax,
       override_available_size, override_percentage_resolution_size,
       block_size_func);
+
+  ipid_depth_log.FPrint("ResolveBlockLengthInternal 返回的结果为：{}", result);
+  if (result == kIndefiniteSize) {
+    ipid_depth_log.FPrint(
+        "当前为「计算最大高度」场景，因此若解析结果为不明确值 "
+        "(-1)，则最终结果为无穷大（表示无最大高度限制）。因此，本函数最终返回无穷大。");
+  } else {
+    ipid_depth_log.FPrint("最终解析结果为：{}", result);
+  }
+
   return result == kIndefiniteSize ? LayoutUnit::Max() : result;
 }
 
@@ -228,11 +382,29 @@ inline LayoutUnit ResolveMainBlockLength(
     const Length* auto_length,
     LayoutUnit intrinsic_size,
     LayoutUnit override_available_size = kIndefiniteSize) {
-  return ResolveBlockLengthInternal(
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMainBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算主要高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n"
+      "若解析过程中需要固有高度，则直接使用预设值：{}",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding), intrinsic_size);
+  if (auto_length) {
+    ipid_depth_log.FPrint("若高度为 auto，兜底为此值：{}", *auto_length);
+  }
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
+  const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length, auto_length,
       LengthTypeInternal::kMain, override_available_size,
       /* override_percentage_resolution_size */ nullptr,
       [intrinsic_size](SizeType) { return intrinsic_size; });
+
+  ipid_depth_log.FPrint("最终解析结果为：{}", result);
+
+  return result;
 }
 
 inline LayoutUnit ResolveMainBlockLength(
@@ -243,10 +415,28 @@ inline LayoutUnit ResolveMainBlockLength(
     const Length* auto_length,
     BlockSizeFunctionRef block_size_func,
     LayoutUnit override_available_size = kIndefiniteSize) {
-  return ResolveBlockLengthInternal(
+  IpidDepthLog ipid_depth_log("length_utils.h: ResolveMainBlockLength");
+  ipid_depth_log.FPrint(
+      "正在将高度值解析为像素值（场景：计算主要高度）。\n"
+      "待解析的高度为：{}\n"
+      "开辟的空间为：{}\n"
+      "元素 border+padding 值：{}\n"
+      "若解析过程中需要固有高度，则通过传入的函数来计算。",
+      length, ipid::GetConstraintSpaceString(constraint_space),
+      ipid::GetBoxStrutString(border_padding));
+  if (auto_length) {
+    ipid_depth_log.FPrint("若高度为 auto，兜底为此值：{}", *auto_length);
+  }
+  ipid_depth_log.FPrint("接下来调用 ResolveBlockLengthInternal 来进行解析。");
+
+  const LayoutUnit result = ResolveBlockLengthInternal(
       constraint_space, style, border_padding, length, auto_length,
       LengthTypeInternal::kMain, override_available_size,
       /* override_percentage_resolution_size */ nullptr, block_size_func);
+
+  ipid_depth_log.FPrint("最终解析结果为：{}", result);
+
+  return result;
 }
 
 // Computes the min-block-size and max-block-size values for a node.

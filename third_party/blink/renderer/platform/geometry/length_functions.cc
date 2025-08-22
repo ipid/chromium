@@ -29,6 +29,10 @@
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size_f.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 int IntValueForLength(const Length& length, int maximum_value) {
@@ -66,16 +70,23 @@ float FloatValueForLength(const Length& length,
 LayoutUnit MinimumValueForLengthInternal(const Length& length,
                                          LayoutUnit maximum_value,
                                          const EvaluationInput& input) {
+  IpidDepthLog ipid_depth_log(
+      "length_functions.cc: MinimumValueForLengthInternal");
+
   switch (length.GetType()) {
-    case Length::kPercent:
+    case Length::kPercent: {
       // Don't remove the extra cast to float. It is needed for rounding on
       // 32-bit Intel machines that use the FPU stack.
-      return LayoutUnit(
+      LayoutUnit ret = LayoutUnit(
           static_cast<float>(maximum_value * length.Percent() / 100.0f));
+      ipid_depth_log.FPrint("{} 长度的计算结果为 {}", length, ret);
+      return ret;
+    }
     case Length::kCalculated:
       return LayoutUnit(length.NonNanCalculatedValue(maximum_value, input));
     case Length::kStretch:
     case Length::kAuto:
+      ipid_depth_log.FPrint("{} 长度的计算结果为 0。", length);
       return LayoutUnit();
     case Length::kFixed:
     case Length::kMinContent:

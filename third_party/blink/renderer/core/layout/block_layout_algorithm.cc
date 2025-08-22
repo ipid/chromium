@@ -44,6 +44,11 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/clear_collection_scope.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 namespace {
 
@@ -392,9 +397,23 @@ void BlockLayoutAlgorithm::SetBoxType(PhysicalFragment::BoxType type) {
 
 MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
     const MinMaxSizesFloatInput& float_input) {
-  if (auto result =
-          CalculateMinMaxSizesIgnoringChildren(node_, BorderScrollbarPadding()))
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::ComputeMinMaxSizes");
+  ipid_depth_log.FPrint(
+      "正在计算元素 {} 的固有宽度。浮动输入状态：左侧浮动宽度 "
+      "{}px，右侧浮动宽度 {}px。",
+      ipid::GetNodeStr(Node()), float_input.float_left_inline_size,
+      float_input.float_right_inline_size);
+
+  if (auto result = CalculateMinMaxSizesIgnoringChildren(
+          node_, BorderScrollbarPadding())) {
+    ipid_depth_log.FPrint(
+        "元素 {} 无需考虑子元素即可确定固有宽度，直接返回结果 {}。",
+        ipid::GetNodeStr(Node()), result->sizes);
     return *result;
+  }
+
+  ipid_depth_log.FPrint("元素 {} 需要遍历子元素来计算固有宽度。",
+                        ipid::GetNodeStr(Node()));
 
   MinMaxSizes sizes;
   bool depends_on_block_constraints = false;
@@ -403,17 +422,30 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
   LayoutUnit float_left_inline_size = float_input.float_left_inline_size;
   LayoutUnit float_right_inline_size = float_input.float_right_inline_size;
 
+  ipid_depth_log.FPrint(
+      "初始化固有宽度计算状态：当前固有宽度 {}，文本方向 "
+      "{}，浮动追踪器状态：左侧 {}px，右侧 {}px。",
+      sizes, (direction == TextDirection::kLtr ? "从左到右" : "从右到左"),
+      float_left_inline_size, float_right_inline_size);
+
   for (LayoutInputNode child = Node().FirstChild(); child;
        child = child.NextSibling()) {
     // We don't check IsRubyText() here intentionally. RubyText width should
     // affect this width.
     if (child.IsOutOfFlowPositioned() ||
         (child.IsColumnSpanAll() && GetConstraintSpace().IsInColumnBfc())) {
+      ipid_depth_log.FPrint("跳过元素 {}：{}", ipid::GetNodeStr(child),
+                            child.IsOutOfFlowPositioned()
+                                ? "绝对定位元素不影响父元素固有宽度"
+                                : "多列布局中的跨列元素在BFC中不影响固有宽度");
       continue;
     }
 
     if (child.IsTextControlPlaceholder()) {
       if (Style().ApplyControlFixedSize(Node().GetDOMNode())) {
+        ipid_depth_log.FPrint(
+            "跳过元素 {}：表单控件占位符在固定尺寸控件中不影响固有宽度。",
+            ipid::GetNodeStr(child));
         continue;
       }
     }
@@ -421,6 +453,13 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
     const ComputedStyle& child_style = child.Style();
     const EClear child_clear = child_style.Clear(Style());
     bool child_is_new_fc = child.CreatesNewFormattingContext();
+
+    std::string ipid_clear_desc = ipid::GetComputedStyleEClearStr(child_clear);
+    ipid_depth_log.FPrint("开始处理子元素 {}。子元素属性：{}，{}。",
+                          ipid::GetNodeStr(child), ipid_clear_desc,
+                          child_is_new_fc
+                              ? "创建新的格式化上下文（BFC/IFC/FFC等）"
+                              : "不创建新格式化上下文");
 
     // Conceptually floats and a single new-FC would just get positioned on a
     // single "line". If there is a float/new-FC with clearance, this creates a
@@ -432,35 +471,75 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
       LayoutUnit float_inline_size =
           float_left_inline_size + float_right_inline_size;
 
-      if (child_clear != EClear::kNone)
+      ipid_depth_log.FPrint(
+          "元素 {} 是{}。当前行上的总浮动宽度为 {}px（左侧 {}px + 右侧 "
+          "{}px）。",
+          ipid::GetNodeStr(child),
+          child.IsFloating() ? "浮动元素" : "新格式化上下文元素",
+          float_inline_size, float_left_inline_size, float_right_inline_size);
+
+      if (child_clear != EClear::kNone) {
+        ipid_depth_log.FPrint(
+            "由于子元素 {} 设置了 "
+            "{}，需要清除浮动并换到新行。将当前行的总浮动宽度 {}px "
+            "更新到最大固有宽度中。更新前最大宽度：{}px。",
+            ipid::GetNodeStr(child), ipid_clear_desc, float_inline_size,
+            sizes.max_size);
         sizes.max_size = std::max(sizes.max_size, float_inline_size);
+        ipid_depth_log.FPrint("更新后最大宽度：{}px。", sizes.max_size);
+      }
 
-      if (child_clear == EClear::kBoth || child_clear == EClear::kLeft)
+      if (child_clear == EClear::kBoth || child_clear == EClear::kLeft) {
+        ipid_depth_log.FPrint(
+            "由于子元素设置了 {}，重置左侧浮动追踪器从 {}px 到 0px。",
+            ipid_clear_desc, float_left_inline_size);
         float_left_inline_size = LayoutUnit();
+      }
 
-      if (child_clear == EClear::kBoth || child_clear == EClear::kRight)
+      if (child_clear == EClear::kBoth || child_clear == EClear::kRight) {
+        ipid_depth_log.FPrint(
+            "由于子元素设置了 {}，重置右侧浮动追踪器从 {}px 到 0px。",
+            ipid_clear_desc, float_right_inline_size);
         float_right_inline_size = LayoutUnit();
+      }
     }
 
     MinMaxSizesFloatInput child_float_input;
     if (child.IsInline() || child.IsAnonymousBlockFlow()) {
       child_float_input.float_left_inline_size = float_left_inline_size;
       child_float_input.float_right_inline_size = float_right_inline_size;
+      ipid_depth_log.FPrint(
+          "元素 {} 是{}，将当前浮动状态传递给子元素：左侧 {}px，右侧 {}px。",
+          ipid::GetNodeStr(child),
+          child.IsInline() ? "内联元素"
+                           : "匿名块流元素（包含内联内容的块级盒子）",
+          float_left_inline_size, float_right_inline_size);
+    } else {
+      ipid_depth_log.FPrint("元素 {} 不是内联或匿名块流元素，不传递浮动状态。",
+                            ipid::GetNodeStr(child));
     }
 
     MinMaxConstraintSpaceBuilder builder(GetConstraintSpace(), Style(), child,
                                          child_is_new_fc);
     builder.SetAvailableBlockSize(ChildAvailableSize().block_size);
-    builder.SetPercentageResolutionBlockSize(
-        PercentageSizeForChild(child).block_size);
+    LayoutUnit child_percentage_block_size =
+        PercentageSizeForChild(child).block_size;
+    builder.SetPercentageResolutionBlockSize(child_percentage_block_size);
     // Pass the replaced %-size down to inline layout.
     if ((child.IsAnonymousBlockFlow() || child.IsInline()) &&
         replaced_child_percentage_size_.block_size !=
             child_percentage_size_.block_size) {
       builder.SetReplacedChildPercentageResolutionBlockSize(
           replaced_child_percentage_size_.block_size);
+      ipid_depth_log.FPrint("为元素 {} 设置特殊的替换元素百分比高度解析尺寸。",
+                            ipid::GetNodeStr(child));
     }
     const auto space = builder.ToConstraintSpace();
+
+    ipid_depth_log.FPrint(
+        "为子元素 {} 创建了约束空间：可用高度 {}px，百分比解析高度 {}px。",
+        ipid::GetNodeStr(child), ChildAvailableSize().block_size,
+        child_percentage_block_size);
 
     MinMaxSizesResult child_result;
     if (child.IsInline()) {
@@ -470,14 +549,26 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
       // an anonymous box that contains all line boxes.
       // |NextSibling| returns the next block sibling, or nullptr, skipping all
       // following inline siblings and descendants.
+      ipid_depth_log.FPrint(
+          "调用内联元素 {} 的 ComputeMinMaxSizes "
+          "方法来计算其固有宽度。注意：这个 InlineNode "
+          "包含了所有紧跟在后的内联元素及其后代。",
+          ipid::GetNodeStr(child));
       child_result = To<InlineNode>(child).ComputeMinMaxSizes(
           Style().GetWritingMode(), space, child_float_input);
     } else {
+      ipid_depth_log.FPrint(
+          "调用 ComputeMinAndMaxContentContribution 来计算块级元素 {} "
+          "对父元素固有宽度的贡献。",
+          ipid::GetNodeStr(child));
       child_result = ComputeMinAndMaxContentContribution(
           Style(), To<BlockNode>(child), space, child_float_input);
     }
     DCHECK_LE(child_result.sizes.min_size, child_result.sizes.max_size)
         << child.ToString();
+
+    ipid_depth_log.FPrint("子元素 {} 的固有宽度计算结果：{}。",
+                          ipid::GetNodeStr(child), child_result.sizes);
 
     // Determine the max inline contribution of the child.
     BoxStrut margins =
@@ -486,29 +577,76 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
             : ComputeMarginsFor(space, child_style, GetConstraintSpace());
     LayoutUnit max_inline_contribution;
 
+    if (child.IsInline()) {
+      ipid_depth_log.FPrint("元素 {} 是内联元素，不计算 margin。",
+                            ipid::GetNodeStr(child));
+    } else {
+      ipid_depth_log.FPrint("计算块级元素 {} 的 margin：{}。",
+                            ipid::GetNodeStr(child),
+                            ipid::GetBoxStrutString(margins));
+    }
+
     if (child.IsFloating()) {
       // A float adds to its inline size to the current "line". The new max
       // inline contribution is just the sum of all the floats on that "line".
       LayoutUnit float_inline_size =
           child_result.sizes.max_size + margins.InlineSum();
 
+      ipid_depth_log.FPrint(
+          "元素 {} 是浮动元素。其对当前行的宽度贡献 = 固有最大宽度 {}px + "
+          "margin 横向值 {}px = {}px。",
+          ipid::GetNodeStr(child), child_result.sizes.max_size,
+          margins.InlineSum(), float_inline_size);
+
       // float_inline_size is negative when the float is completely outside of
       // the content area, by e.g., negative margins. Such floats do not affect
       // the content size.
       if (float_inline_size > 0) {
-        if (child_style.Floating(Style()) == EFloat::kLeft)
+        const char* ipid_float_direction_text =
+            ipid::GetComputedStyleEFloatStr(child_style.Floating(Style()));
+        if (child_style.Floating(Style()) == EFloat::kLeft) {
+          ipid_depth_log.FPrint(
+              "由于元素 {} 设置了 {}，将其宽度贡献 {}px "
+              "添加到左侧浮动追踪器中。更新前：{}px。",
+              ipid::GetNodeStr(child), ipid_float_direction_text,
+              float_inline_size, float_left_inline_size);
           float_left_inline_size += float_inline_size;
-        else
+          ipid_depth_log.FPrint("更新后左侧浮动追踪器：{}px。",
+                                float_left_inline_size);
+        } else {
+          ipid_depth_log.FPrint(
+              "由于元素 {} 设置了 {}，将其宽度贡献 {}px "
+              "添加到右侧浮动追踪器中。更新前：{}px。",
+              ipid::GetNodeStr(child), ipid_float_direction_text,
+              float_inline_size, float_right_inline_size);
           float_right_inline_size += float_inline_size;
+          ipid_depth_log.FPrint("更新后右侧浮动追踪器：{}px。",
+                                float_right_inline_size);
+        }
+      } else {
+        ipid_depth_log.FPrint(
+            "浮动元素 {} 的宽度贡献 {}px 为负数或零（可能由负 margin "
+            "导致），不影响浮动追踪器。",
+            ipid::GetNodeStr(child), float_inline_size);
       }
 
       max_inline_contribution =
           float_left_inline_size + float_right_inline_size;
+      ipid_depth_log.FPrint(
+          "当前行的最大内联贡献 = 左侧浮动 {}px + 右侧浮动 {}px = {}px。",
+          float_left_inline_size, float_right_inline_size,
+          max_inline_contribution);
     } else if (child_is_new_fc) {
       // As floats are line relative, we perform the margin calculations in the
       // line relative coordinate system as well.
       LayoutUnit margin_line_left = margins.LineLeft(direction);
       LayoutUnit margin_line_right = margins.LineRight(direction);
+
+      ipid_depth_log.FPrint(
+          "元素 {} "
+          "创建新格式化上下文。计算其在浮动环境中的宽度贡献。在行相对坐标系中："
+          "margin-line-left = {}px，margin-line-right = {}px。",
+          ipid::GetNodeStr(child), margin_line_left, margin_line_right);
 
       // line_left_inset and line_right_inset are the "distance" from their
       // respective edges of the parent that the new-FC would take. If the
@@ -525,29 +663,85 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
               ? std::max(float_right_inline_size, margin_line_right)
               : float_right_inline_size + margin_line_right;
 
+      ipid_depth_log.FPrint(
+          "计算新BFC元素 {} 的左右占用空间：\n"
+          "- 左侧：{} = {} \n"
+          "- 右侧：{} = {}",
+          ipid::GetNodeStr(child),
+          (margin_line_left > LayoutUnit()
+               ? "正margin，取max(左侧浮动宽度, margin)"
+               : "负margin，浮动宽度 + margin"),
+          line_left_inset,
+          (margin_line_right > LayoutUnit()
+               ? "正margin，取max(右侧浮动宽度, margin)"
+               : "负margin，浮动宽度 + margin"),
+          line_right_inset);
+
       // The order of operations is important here.
       // If child_result.sizes.max_size is saturated, adding the insets
       // sequentially can result in an DCHECK.
       max_inline_contribution =
           child_result.sizes.max_size + (line_left_inset + line_right_inset);
+      ipid_depth_log.FPrint(
+          "新BFC元素 {} 的最大内联贡献 = 固有最大宽度 {}px + (左侧占用 {}px + "
+          "右侧占用 {}px) = {}px。",
+          ipid::GetNodeStr(child), child_result.sizes.max_size, line_left_inset,
+          line_right_inset, max_inline_contribution);
     } else {
       // This is just a standard inflow child.
       max_inline_contribution =
           child_result.sizes.max_size + margins.InlineSum();
+      ipid_depth_log.FPrint(
+          "普通的流内块级元素 {} 的最大内联贡献 = 固有最大宽度 {}px + margin "
+          "横向值 {}px = {}px。",
+          ipid::GetNodeStr(child), child_result.sizes.max_size,
+          margins.InlineSum(), max_inline_contribution);
     }
+    LayoutUnit old_max_size = sizes.max_size;
     sizes.max_size = std::max(sizes.max_size, max_inline_contribution);
+    if (sizes.max_size != old_max_size) {
+      ipid_depth_log.FPrint(
+          "更新父元素的固有最大宽度：从 {}px 更新为 {}px（子元素 {} 贡献了 "
+          "{}px）。",
+          old_max_size, sizes.max_size, ipid::GetNodeStr(child),
+          max_inline_contribution);
+    }
 
     // The min inline contribution just assumes that floats are all on their own
     // "line".
     LayoutUnit min_inline_contribution =
         child_result.sizes.min_size + margins.InlineSum();
+    LayoutUnit old_min_size = sizes.min_size;
     sizes.min_size = std::max(sizes.min_size, min_inline_contribution);
 
+    ipid_depth_log.FPrint(
+        "子元素 {} 的固有最小宽度贡献 = 固有最小宽度 {}px + margin 横向值 {}px "
+        "= {}px。",
+        ipid::GetNodeStr(child), child_result.sizes.min_size,
+        margins.InlineSum(), min_inline_contribution);
+    if (sizes.min_size != old_min_size) {
+      ipid_depth_log.FPrint("更新父元素的固有最小宽度：从 {}px 更新为 {}px。",
+                            old_min_size, sizes.min_size);
+    }
+
     depends_on_block_constraints |= child_result.depends_on_block_constraints;
+    if (child_result.depends_on_block_constraints) {
+      ipid_depth_log.FPrint(
+          "子元素 {} 的固有宽度依赖于块级约束，标记父元素也依赖块级约束。",
+          ipid::GetNodeStr(child));
+    }
 
     // Anything that isn't a float will create a new "line" resetting the float
     // size trackers.
     if (!child.IsFloating()) {
+      if (float_left_inline_size > LayoutUnit() ||
+          float_right_inline_size > LayoutUnit()) {
+        ipid_depth_log.FPrint(
+            "非浮动元素 {} 创建新行，重置浮动追踪器：左侧从 {}px 重置为 "
+            "0px，右侧从 {}px 重置为 0px。",
+            ipid::GetNodeStr(child), float_left_inline_size,
+            float_right_inline_size);
+      }
       float_left_inline_size = LayoutUnit();
       float_right_inline_size = LayoutUnit();
     }
@@ -556,7 +750,24 @@ MinMaxSizesResult BlockLayoutAlgorithm::ComputeMinMaxSizes(
   DCHECK_GE(sizes.min_size, LayoutUnit());
   DCHECK_LE(sizes.min_size, sizes.max_size) << Node().ToString();
 
-  sizes += BorderScrollbarPadding().InlineSum();
+  ipid_depth_log.FPrint(
+      "子元素遍历完成。在加上 border/scrollbar/padding "
+      "之前，计算出的固有宽度为：{}。",
+      sizes);
+
+  LayoutUnit border_scrollbar_padding_inline =
+      BorderScrollbarPadding().InlineSum();
+  sizes += border_scrollbar_padding_inline;
+
+  ipid_depth_log.FPrint(
+      "最终结果：固有宽度 {} + border/scrollbar/padding 横向值 {}px = "
+      "{}。是否依赖块级约束：{}。",
+      ipid::GetMinMaxSizesString(
+          MinMaxSizes{sizes.min_size - border_scrollbar_padding_inline,
+                      sizes.max_size - border_scrollbar_padding_inline}),
+      border_scrollbar_padding_inline, sizes,
+      ipid::btos(depends_on_block_constraints));
+
   return MinMaxSizesResult(sizes, depends_on_block_constraints);
 }
 
@@ -753,9 +964,17 @@ NOINLINE const LayoutResult* BlockLayoutAlgorithm::RelayoutForTextBoxTrimEnd() {
 
 inline const LayoutResult* BlockLayoutAlgorithm::Layout(
     InlineChildLayoutContext* inline_child_layout_context) {
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::Layout");
+  ipid_depth_log.FPrint("正在布局元素 {}。", ipid::GetNodeStr(Node()));
+
   DCHECK_EQ(!!inline_child_layout_context,
             Node().IsInlineFormattingContextRoot());
   container_builder_.SetIsInlineFormattingContext(inline_child_layout_context);
+
+  if (inline_child_layout_context) {
+    ipid_depth_log.FPrint(
+        "该元素是内联格式化上下文根节点，将处理内联子元素的布局。");
+  }
 
   // If this node has a column spanner inside, we'll force it to stay within the
   // current fragmentation flow, so that it doesn't establish a parallel flow,
@@ -763,10 +982,15 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   // This way we'll prevent content that comes after the spanner from being laid
   // out *before* it.
   if (column_spanner_path_) {
+    ipid_depth_log.FPrint(
+        "检测到元素内部存在跨列元素，强制保持在当前分段流中，防止内容乱序。");
     container_builder_.SetShouldForceSameFragmentationFlow();
   }
 
   const auto& constraint_space = GetConstraintSpace();
+  ipid_depth_log.FPrint(
+      "当前的 ConstraintSpace 中，可用空间大小: {}，BFC 偏移: {}",
+      constraint_space.AvailableSize(), constraint_space.GetBfcOffset());
   container_builder_.SetBfcLineOffset(
       constraint_space.GetBfcOffset().line_offset);
 
@@ -775,6 +999,10 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
     DCHECK(!constraint_space.IsNewFormattingContext());
     DCHECK(!container_builder_.BfcBlockOffset());
 
+    ipid_depth_log.FPrint(
+        "检测到邻接对象（浮动或绝对定位元素），类型: {}。"
+        "设置当 BFC 块偏移更新时中止布局的标志。",
+        adjoining_object_types);
     // If there were preceding adjoining objects, they will be affected when the
     // BFC block-offset gets resolved or updated. We then need to roll back and
     // re-layout those objects with the new BFC block-offset, once the BFC
@@ -783,26 +1011,41 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
 
     container_builder_.SetAdjoiningObjectTypes(adjoining_object_types);
   } else if (constraint_space.HasBlockFragmentation()) {
+    ipid_depth_log.FPrint(
+        "当前空间支持块分段，设置当 BFC 块偏移更新时中止布局的标志。");
     // The offset from the block-start of the fragmentainer is part of the
     // constraint space, so if this offset changes, we need to abort.
     abort_when_bfc_block_offset_updated_ = true;
   }
 
   if (Style().HasLineClamp()) {
+    ipid_depth_log.FPrint("元素设置了 line-clamp 属性，需要处理行数限制。");
     if (!line_clamp_data_.data.IsLineClampContext()) {
       LayoutUnit clamp_bfc_offset = ChildAvailableSize().block_size;
+      ipid_depth_log.FPrint("子元素可用空间高度: {}", clamp_bfc_offset);
       if (clamp_bfc_offset == kIndefiniteSize) {
+        ipid_depth_log.FPrint(
+            "子元素可用空间高度不明确，需要计算元素的初始最小/最大块尺寸。");
         const MinMaxSizes sizes = ComputeInitialMinMaxBlockSizes(
             constraint_space, Node(), BorderPadding());
+        ipid_depth_log.FPrint("初始块尺寸计算结果: {}", sizes);
         if (sizes.max_size != LayoutUnit::Max()) {
           clamp_bfc_offset =
               (sizes.max_size - BorderScrollbarPadding().block_end)
                   .ClampNegativeToZero();
+          ipid_depth_log.FPrint(
+              "根据最大尺寸 {} 减去下方边框和内边距 {} 计算得到 clamp BFC "
+              "偏移: {}",
+              sizes.max_size, BorderScrollbarPadding().block_end,
+              clamp_bfc_offset);
         }
       } else {
         clamp_bfc_offset =
             (BorderScrollbarPadding().block_start + clamp_bfc_offset)
                 .ClampNegativeToZero();
+        ipid_depth_log.FPrint(
+            "加上上方边框和内边距 {} 计算得到 clamp BFC 偏移: {}",
+            BorderScrollbarPadding().block_start, clamp_bfc_offset);
       }
 
       if (clamp_bfc_offset != kIndefiniteSize) {
@@ -819,9 +1062,15 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
       }
 
       line_clamp_data_.UpdateFromStyle(Style().LineClamp(), clamp_bfc_offset);
+      ipid_depth_log.FPrint("更新 line-clamp 数据，行数限制: {}，BFC 偏移: {}",
+                            Style().LineClamp(), clamp_bfc_offset);
     }
   } else {
     if (Style().WebkitLineClamp() != 0) {
+      ipid_depth_log.FPrint(
+          "检测到使用了旧版 -webkit-line-clamp 属性（值: {}），"
+          "将记录 WebFeature 统计。",
+          Style().WebkitLineClamp());
       UseCounter::Count(Node().GetDocument(),
                         WebFeature::kWebkitLineClampWithoutWebkitBox);
     }
@@ -830,43 +1079,73 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
     // leave room for it. This doesn't apply if we're relaying out to fix the
     // offset, because that already accounts for the bmp.
     if (line_clamp_data_.data.IsMeasureUntilBfcOffset()) {
+      ipid_depth_log.FPrint(
+          "正在按 BFC 偏移来限制行数，需要调整下方的 margin 和 padding。");
       MarginStrut end_margin_strut = constraint_space.LineClampEndMarginStrut();
-      end_margin_strut.Append(
-          ComputeMarginsForSelf(constraint_space, Style()).block_end,
-          /* is_quirky */ false);
+      BoxStrut self_margins = ComputeMarginsForSelf(constraint_space, Style());
+      end_margin_strut.Append(self_margins.block_end,
+                              /* is_quirky */ false);
+      ipid_depth_log.FPrint(
+          "计算结束 margin strut，祖先贡献: {}，当前元素下方 margin: {}，"
+          "合并后: {}",
+          ipid::GetMarginStrutString(
+              constraint_space.LineClampEndMarginStrut()),
+          self_margins.block_end, ipid::GetMarginStrutString(end_margin_strut));
 
       // `constraint_space.LineClampEndMarginStrut().Sum()` is the margin
       // contribution from our ancestor boxes, which has already been taken
       // into account for the clamp BFC offset that we have. We only need to
       // add any additional margin contribution from this box's margin.
+      LayoutUnit margin_adjustment =
+          end_margin_strut.Sum() -
+          constraint_space.LineClampEndMarginStrut().Sum();
+      LayoutUnit border_padding_adjustment = BorderScrollbarPadding().block_end;
       line_clamp_data_.data.clamp_bfc_offset -=
-          BorderScrollbarPadding().block_end +
-          (end_margin_strut.Sum() -
-           constraint_space.LineClampEndMarginStrut().Sum());
+          border_padding_adjustment + margin_adjustment;
+      ipid_depth_log.FPrint(
+          "调整 clamp BFC 偏移，减去下方边框内边距 {} 和 margin 调整量 {}，"
+          "调整后的 clamp BFC 偏移: {}",
+          border_padding_adjustment, margin_adjustment,
+          line_clamp_data_.data.clamp_bfc_offset);
 
       // The presence of borders and padding blocks margin propagation.
       if (!BorderScrollbarPadding().block_end) {
+        ipid_depth_log.FPrint(
+            "下方没有边框内边距，保存结束 margin strut 用于 margin 传播。");
         line_clamp_data_.end_margin_strut = end_margin_strut;
       }
     }
   }
 
   LayoutUnit content_edge = BorderScrollbarPadding().block_start;
+  ipid_depth_log.FPrint("计算内容区域的起始位置，上方边框内边距: {}",
+                        content_edge);
 
   PreviousInflowPosition previous_inflow_position = {
       LayoutUnit(), constraint_space.GetMarginStrut(),
       is_resuming_ ? LayoutUnit() : container_builder_.Padding().block_start,
       /* self_collapsing_child_had_clearance */ false};
+  ipid_depth_log.FPrint(
+      "初始化前一个内联流子元素位置信息："
+      "逻辑块偏移: {}，margin strut: {}，块端注释空间: {}",
+      previous_inflow_position.logical_block_offset,
+      ipid::GetMarginStrutString(previous_inflow_position.margin_strut),
+      previous_inflow_position.block_end_annotation_space);
 
   if (GetBreakToken()) {
+    ipid_depth_log.FPrint("检测到断点令牌，表明正在从断点恢复布局。");
     if (IsBreakInside(GetBreakToken()) && !GetBreakToken()->IsForcedBreak() &&
         !GetBreakToken()->IsCausedByColumnSpanner()) {
+      ipid_depth_log.FPrint(
+          "断点令牌表明在容器内部发生了非强制断点，设置 margin 丢弃标志。");
       // If the block container is being resumed after an unforced break,
       // margins inside may be adjoining with the fragmentainer boundary.
       previous_inflow_position.margin_strut.discard_margins = true;
     }
 
     if (GetBreakToken()->MonolithicOverflow()) {
+      ipid_depth_log.FPrint(
+          "断点令牌表明存在单一块溢出，设置下一个子元素前有断点机会。");
       // If we have been pushed by monolithic overflow that started on a
       // previous page, we'll behave as if there's a valid breakpoint before the
       // first child here, and that it has perfect break appeal. This isn't
@@ -888,9 +1167,15 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   // In all those cases we can and must resolve the BFC block offset now.
   if (content_edge || is_resuming_ ||
       constraint_space.IsNewFormattingContext()) {
+    ipid_depth_log.FPrint(
+        "满足 margin 不折叠条件（content_edge: {}，is_resuming: {}，"
+        "IsNewFormattingContext: {}），需要立即解析 BFC 块偏移。",
+        content_edge, ipid::btos(is_resuming_),
+        constraint_space.IsNewFormattingContext());
     bool discard_subsequent_margins =
         previous_inflow_position.margin_strut.discard_margins && !content_edge;
     if (!ResolveBfcBlockOffset(&previous_inflow_position)) {
+      ipid_depth_log.FPrint("BFC 块偏移解析失败，需要中止布局等待再次尝试。");
       // There should be no preceding content that depends on the BFC block
       // offset of a new formatting context block, and likewise when resuming
       // from a break token.
@@ -898,6 +1183,8 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
       DCHECK(!is_resuming_);
       return container_builder_.Abort(LayoutResult::kBfcBlockOffsetResolved);
     }
+    ipid_depth_log.FPrint("BFC 块偏移解析成功，将子元素位置移动到内容区域: {}",
+                          content_edge);
     // Move to the content edge. This is where the first child should be placed.
     previous_inflow_position.logical_block_offset = content_edge;
 
@@ -905,8 +1192,11 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
     // reset. If margins are to be discarded, and this box would otherwise have
     // adjoining margins between its own margin and those subsequent content,
     // we need to make sure subsequent content discard theirs.
-    if (discard_subsequent_margins)
+    if (discard_subsequent_margins) {
+      ipid_depth_log.FPrint(
+          "由于需要丢弃后续 margin，设置后续内容的 margin 丢弃标志。");
       previous_inflow_position.margin_strut.discard_margins = true;
+    }
   }
 
 #if DCHECK_IS_ON()
@@ -936,6 +1226,8 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   // max-height: 0).
   if (constraint_space.IsNewFormattingContext() &&
       line_clamp_data_.IsPastClampPoint()) {
+    ipid_depth_log.FPrint(
+        "新格式化上下文且已超过 line-clamp 点，保存当前位置信息。");
     line_clamp_data_.previous_inflow_position_when_clamped =
         previous_inflow_position;
   }
@@ -950,8 +1242,12 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   // </body>
   // In the above example <p>'s & <h1>'s margins are ignored as they are
   // quirky, and we only consider <div>'s 10px margin.
-  if (node_.IsQuirkyContainer())
+  if (node_.IsQuirkyContainer()) {
+    ipid_depth_log.FPrint(
+        "当前节点是怪异模式容器（table cell 或 body），"
+        "设置 margin strut 仅考虑非怪异 margin。");
     previous_inflow_position.margin_strut.is_quirky_container_start = true;
+  }
 
   // Try to reuse line box fragments from cached fragments if possible.
   // When possible, this adds fragments to |container_builder_| and update
@@ -959,20 +1255,30 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   const InlineBreakToken* previous_inline_break_token = nullptr;
 
   BlockChildIterator child_iterator(Node().FirstChild(), GetBreakToken());
+  ipid_depth_log.FPrint("初始化子元素迭代器，第一个子元素: {}，断点令牌: {}",
+                        ipid::GetNodeStr(Node().FirstChild()),
+                        ipid::btos(GetBreakToken()));
 
   // If this layout is blocked by a display-lock, then we pretend this node has
   // no children and that there are no break tokens. Due to this, we skip layout
   // on these children.
-  if (Node().ChildLayoutBlockedByDisplayLock())
+  if (Node().ChildLayoutBlockedByDisplayLock()) {
+    ipid_depth_log.FPrint("子元素布局被 display-lock 阻塞，忽略所有子元素。");
     child_iterator = BlockChildIterator(BlockNode(nullptr), nullptr);
+  }
 
   BlockNode placeholder_child(nullptr);
   BlockChildIterator::Entry entry;
+  ipid_depth_log.FPrint("开始遍历子元素列表进行布局。");
   for (entry = child_iterator.NextChild(); LayoutInputNode child = entry.node;
        entry = child_iterator.NextChild(previous_inline_break_token)) {
     const BreakToken* child_break_token = entry.token;
+    ipid_depth_log.FPrint("正在处理子元素: {}", ipid::GetNodeStr(child));
 
     if (child.IsOutOfFlowPositioned()) {
+      ipid_depth_log.FPrint(
+          "子元素 {} 是绝对定位元素，调用 HandleOutOfFlowPositioned 处理。",
+          ipid::GetNodeStr(child));
       // Out-of-flow fragmentation is a special step that takes place after
       // regular layout, so we should never resume anything here. However, we
       // may have break-before tokens, when a column spanner is directly
@@ -982,14 +1288,20 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
               To<BlockBreakToken>(child_break_token)->IsBreakBefore()));
       HandleOutOfFlowPositioned(previous_inflow_position, To<BlockNode>(child));
     } else if (child.IsFloating()) {
+      ipid_depth_log.FPrint("子元素 {} 是浮动元素，调用 HandleFloat 处理。",
+                            ipid::GetNodeStr(child));
       HandleFloat(previous_inflow_position, To<BlockNode>(child),
                   To<BlockBreakToken>(child_break_token));
     } else if (child.IsListMarker() && !child.ListMarkerOccupiesWholeLine()) {
+      ipid_depth_log.FPrint("子元素 {} 是不占据整行的列表标记，忽略处理。",
+                            ipid::GetNodeStr(child));
       // Ignore outside list markers because they are already set to
       // |container_builder_.UnpositionedListMarker| in the constructor, unless
       // |ListMarkerOccupiesWholeLine|, which is handled like a regular child.
     } else if (child.IsColumnSpanAll() && constraint_space.IsInColumnBfc() &&
                constraint_space.HasBlockFragmentation()) {
+      ipid_depth_log.FPrint("子元素 {} 是跨列元素，处理列分段逻辑。",
+                            ipid::GetNodeStr(child));
       // The child is a column spanner. If we have no breaks inside (in parallel
       // flows), we now need to finish this fragmentainer, then abort and let
       // the column layout algorithm handle the spanner as a child. The
@@ -1003,6 +1315,8 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
 
       if (constraint_space.IsPastBreak() ||
           container_builder_.HasInsertedChildBreak()) {
+        ipid_depth_log.FPrint(
+            "检测到内部已有断点，需要先完成跨列元素之前的内容。");
         // Something broke inside (typically in a parallel flow, or we wouldn't
         // be here). Before we can handle the spanner, we need to finish what
         // comes before it.
@@ -1013,12 +1327,14 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
         // so we don't set a spanner path, but since we did find a spanner, make
         // a note of it. This will make sure that we resolve our BFC block-
         // offset, so that we don't incorrectly appear to be self-collapsing.
+        ipid_depth_log.FPrint("标记找到跨列元素，确保 BFC 块偏移被解析。");
         container_builder_.SetHasColumnSpanner(true);
         break;
       }
 
       // Establish a column spanner path. The innermost node will be the spanner
       // itself, wrapped inside the container handled by this layout algorithm.
+      ipid_depth_log.FPrint("建立跨列元素路径，设置父容器为空的标记。");
       const auto* child_spanner_path =
           MakeGarbageCollected<ColumnSpannerPath>(To<BlockNode>(child));
       const auto* container_spanner_path =
@@ -1029,8 +1345,13 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
       // if the column spanner's parent was empty, for example, in the case that
       // the only child content of the parent since the last spanner is an OOF
       // that will get positioned outside the multicol.
-      container_builder_.SetIsEmptySpannerParent(
-          container_builder_.Children().empty() && is_resuming_);
+      bool is_empty_parent =
+          container_builder_.Children().empty() && is_resuming_;
+      ipid_depth_log.FPrint(
+          "设置跨列元素父容器空标记: {}（子元素数: {}，恢复标志: {}）",
+          is_empty_parent, container_builder_.Children().size(),
+          ipid::btos(is_resuming_));
+      container_builder_.SetIsEmptySpannerParent(is_empty_parent);
       // After the spanner(s), we are going to resume inside this block. If
       // there's a subsequent sibling that's not a spanner, we're resume right
       // in front of that one. Otherwise we'll just resume after all the
@@ -1047,13 +1368,19 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
       }
       break;
     } else if (child.IsTextControlPlaceholder()) {
+      ipid_depth_log.FPrint("子元素 {} 是文本控件占位符，暂存以后处理。",
+                            ipid::GetNodeStr(child));
       placeholder_child = To<BlockNode>(child);
     } else {
       // If this is the child we had previously determined to break before, do
       // so now and finish layout.
       if (early_break_ && IsEarlyBreakTarget(*early_break_, container_builder_,
                                              child)) [[unlikely]] {
+        ipid_depth_log.FPrint("子元素 {} 是预先确定的断点目标，在此处断开。",
+                              ipid::GetNodeStr(child));
         if (!ResolveBfcBlockOffset(&previous_inflow_position)) {
+          ipid_depth_log.FPrint(
+              "断点位置恰好是 BFC 块偏移解析点，中止布局等待重新布局。");
           // However, the predetermined breakpoint may be exactly where the BFC
           // block-offset gets resolved. If that hasn't yet happened, we need to
           // do that first and re-layout at the right BFC block-offset, and THEN
@@ -1064,22 +1391,35 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
         container_builder_.AddBreakBeforeChild(child, kBreakAppealPerfect,
                                                /* is_forced_break */ false);
         ConsumeRemainingFragmentainerSpace(&previous_inflow_position);
+        ipid_depth_log.FPrint(
+            "在子元素 {} 前添加断点，消耗剩余分段空间，结束布局。",
+            ipid::GetNodeStr(child));
         break;
       }
 
       LayoutResult::EStatus status;
       if (child.CreatesNewFormattingContext()) {
+        ipid_depth_log.FPrint(
+            "子元素 {} 建立新格式化上下文，调用 HandleNewFormattingContext "
+            "处理。",
+            ipid::GetNodeStr(child));
         status = HandleNewFormattingContext(
             child, To<BlockBreakToken>(child_break_token),
             &previous_inflow_position);
         previous_inline_break_token = nullptr;
       } else {
+        ipid_depth_log.FPrint(
+            "子元素 {} 不建立新格式化上下文，调用 HandleInflow 处理。",
+            ipid::GetNodeStr(child));
         status = HandleInflow(
             child, child_break_token, &previous_inflow_position,
             inline_child_layout_context, &previous_inline_break_token);
       }
 
       if (status != LayoutResult::kSuccess) {
+        ipid_depth_log.FPrint("子元素 {} 的布局状态为 {}，中止布局。",
+                              ipid::GetNodeStr(child),
+                              ipid::GetLayoutResultStatusString(status));
         // We need to abort the layout. No fragment will be generated.
         return container_builder_.Abort(status);
       }
@@ -1087,6 +1427,8 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
         // A child break in a parallel flow doesn't affect whether we should
         // break here or not.
         if (container_builder_.HasInflowChildBreakInside()) {
+          ipid_depth_log.FPrint(
+              "检测到子元素内部发生了断点（同一流），结束布局。");
           // But if the break happened in the same flow, we'll now just finish
           // layout of the fragment. No more siblings should be processed.
           break;
@@ -1094,6 +1436,7 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
       }
     }
   }
+  ipid_depth_log.FPrint("子元素遍历完成。");
 
 #if DCHECK_IS_ON()
   // Assert that we have made actual progress. Breaking before we're done with
@@ -1126,6 +1469,7 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   }
 
   if (!child_iterator.NextChild(previous_inline_break_token).node) {
+    ipid_depth_log.FPrint("所有子元素都已遍历完成，标记为已查看所有子元素。");
     // We've gone through all the children. This doesn't necessarily mean that
     // we're done fragmenting, as there may be parallel flows [1] (visible
     // overflow) still needing more space than what the current fragmentainer
@@ -1141,17 +1485,28 @@ inline const LayoutResult* BlockLayoutAlgorithm::Layout(
   // The intrinsic block size is not allowed to be less than the content edge
   // offset, as that could give us a negative content box size.
   intrinsic_block_size_ = content_edge;
+  ipid_depth_log.FPrint(
+      "设置内在块大小为内容区域起始位置: {}，防止负数内容盒。", content_edge);
 
   // To save space of the stack when we recurse into children, the rest of this
   // function is continued within |FinishLayout|. However it should be read as
   // one function.
+  ipid_depth_log.FPrint("布局主要部分完成，调用 FinishLayout 完成剩余工作。");
   return FinishLayout(&previous_inflow_position, inline_child_layout_context);
 }
 
 const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     PreviousInflowPosition* previous_inflow_position,
     InlineChildLayoutContext* inline_child_layout_context) {
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::FinishLayout");
+  ipid_depth_log.FPrint("正在完成元素 {} 的布局的收尾工作。",
+                        ipid::GetNodeStr(Node()));
+
   const auto& constraint_space = GetConstraintSpace();
+  ipid_depth_log.FPrint(
+      "检查是否为新的格式化上下文: {}，line-clamp 数据状态: {}",
+      ipid::btos(constraint_space.IsNewFormattingContext()),
+      ipid::btos(line_clamp_data_.ShouldRelayoutWithNoForcedTruncate()));
   if (constraint_space.IsNewFormattingContext() &&
       line_clamp_data_.ShouldRelayoutWithNoForcedTruncate()) [[unlikely]] {
     // Truncation of the last line was forced, but there are no lines after the
@@ -1159,9 +1514,19 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     // done if line-clamp was specified on the element as the element containing
     // the node may have subsequent lines. If there aren't, the containing
     // element will relayout.
+    ipid_depth_log.FPrint(
+        "Line-clamp "
+        "强制截断了最后一行，但截断行后没有更多行，需要重新布局而不强制截断。");
     return container_builder_.Abort(LayoutResult::kNeedsLineClampRelayout);
   }
 
+  ipid_depth_log.FPrint(
+      "检查 text-box-trim-end 状态: {}，有最后非空内流子元素: {}，未进行 "
+      "line-clamp: {}",
+      ipid::btos(container_builder_.ShouldTextBoxTrimEnd()),
+      ipid::GetNodeStr(last_non_empty_inflow_child_),
+      ipid::btos(
+          !line_clamp_data_.previous_inflow_position_when_clamped.has_value()));
   if (container_builder_.ShouldTextBoxTrimEnd() &&
       last_non_empty_inflow_child_ &&
       !line_clamp_data_.previous_inflow_position_when_clamped.has_value())
@@ -1172,6 +1537,10 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     // with no trimming.
     // We ignore this if we have line-clamped, because the trim-end would have
     // applied to the last line before clamp regardless.
+    ipid_depth_log.FPrint(
+        "text-box-trim: trim-end "
+        "应该应用于最后的内流子元素，但无法确定哪个是最后的子元素，需要中止布局"
+        "。");
     return container_builder_.Abort(LayoutResult::kTextBoxTrimEndDidNotApply);
   }
 
@@ -1182,21 +1551,36 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   if (RuntimeEnabledFeatures::CSSLineClampEnabled() &&
       line_clamp_data_.previous_inflow_position_when_clamped.has_value())
       [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "CSS line-clamp 已启用且在此盒内进行了 line-clamp，使用保存的 clamp "
+        "点的上一个内流位置。");
     previous_inflow_position =
         &*line_clamp_data_.previous_inflow_position_when_clamped;
   }
 
   LogicalSize border_box_size = container_builder_.InitialBorderBoxSize();
   MarginStrut end_margin_strut = previous_inflow_position->margin_strut;
+  ipid_depth_log.FPrint(
+      "初始边框盒大小: {}，从上一个内流位置获取的结束 margin strut: {}",
+      ipid::GetLogicalSizeString(border_box_size),
+      ipid::GetMarginStrutString(end_margin_strut));
 
   // Add line height for empty content editable or button with empty label, e.g.
   // <div contenteditable></div>, <input type="button" value="">
   if (container_builder_.HasSeenAllChildren() &&
       HasLineEvenIfEmpty(Node().GetLayoutBox())) {
-    intrinsic_block_size_ = std::max(
-        intrinsic_block_size_, BorderScrollbarPadding().block_start +
-                                   Node().EmptyLineBlockSize(GetBreakToken()));
+    LayoutUnit empty_line_size = Node().EmptyLineBlockSize(GetBreakToken());
+    ipid_depth_log.FPrint(
+        "元素已看到所有子元素且即使为空也应有行高，空行大小: "
+        "{}，当前内在块大小: {}",
+        empty_line_size, intrinsic_block_size_);
+    intrinsic_block_size_ =
+        std::max(intrinsic_block_size_,
+                 BorderScrollbarPadding().block_start + empty_line_size);
+    ipid_depth_log.FPrint("更新后的内在块大小: {}", intrinsic_block_size_);
     if (container_builder_.IsInitialColumnBalancingPass()) {
+      ipid_depth_log.FPrint("当前是初始列平衡阶段，传播最高不可分割块大小: {}",
+                            intrinsic_block_size_);
       container_builder_.PropagateTallestUnbreakableBlockSize(
           intrinsic_block_size_);
     }
@@ -1206,6 +1590,8 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     const LayoutBlock* const layout_block =
         To<LayoutBlock>(Node().GetLayoutBox());
     if (auto baseline_offset = layout_block->BaselineForEmptyLine()) {
+      ipid_depth_log.FPrint("为空的可编辑元素设置基线偏移: {}",
+                            *baseline_offset);
       container_builder_.SetBaselines(*baseline_offset);
     }
   }
@@ -1218,8 +1604,12 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   if (previous_inflow_position->block_end_annotation_space < LayoutUnit()) {
     const LayoutUnit annotation_overflow =
         -previous_inflow_position->block_end_annotation_space;
-    previous_inflow_position->logical_block_offset -=
-        std::min(container_builder_.Padding().block_end, annotation_overflow);
+    LayoutUnit padding_block_end = container_builder_.Padding().block_end;
+    LayoutUnit reduction = std::min(padding_block_end, annotation_overflow);
+    ipid_depth_log.FPrint(
+        "存在注解溢出: {}，容器下方 padding: {}，减少逻辑块偏移: {}",
+        annotation_overflow, padding_block_end, reduction);
+    previous_inflow_position->logical_block_offset -= reduction;
   }
 
   // If line clamping occurred, and we're using the legacy behavior, the
@@ -1228,10 +1618,14 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   if (!RuntimeEnabledFeatures::CSSLineClampEnabled() &&
       line_clamp_data_.previous_inflow_position_when_clamped) {
     DCHECK(container_builder_.BfcBlockOffset());
-    intrinsic_block_size_ =
+    LayoutUnit clamped_size =
         line_clamp_data_.previous_inflow_position_when_clamped
             ->logical_block_offset +
         BorderScrollbarPadding().block_end;
+    ipid_depth_log.FPrint(
+        "使用传统行为，发生了 line clamping，内在块大小来自 clamp 时间点: {}",
+        clamped_size);
+    intrinsic_block_size_ = clamped_size;
     end_margin_strut = MarginStrut();
   } else if (BorderScrollbarPadding().block_end ||
              previous_inflow_position->self_collapsing_child_had_clearance ||
@@ -1242,6 +1636,13 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     //  - There was a self-collapsing child affected by clearance.
     //  - We are a new formatting context.
     // Additionally this fragment produces no end margin strut.
+    ipid_depth_log.FPrint(
+        "结束 margin strut 将贡献给当前片段大小。原因: 下方 border/padding: "
+        "{}，有受 clearance 影响的自折叠子元素: {}，是新格式化上下文: {}",
+        BorderScrollbarPadding().block_end,
+        ipid::btos(
+            previous_inflow_position->self_collapsing_child_had_clearance),
+        ipid::btos(constraint_space.IsNewFormattingContext()));
 
     // If the current layout is a new formatting context, we need to encapsulate
     // all of our floats, except for those that were hidden because of
@@ -1249,6 +1650,9 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     if (constraint_space.IsNewFormattingContext()) {
       LayoutUnit clearance =
           GetExclusionSpace().NonHiddenClearanceOffsetIncludingInitialLetter();
+      ipid_depth_log.FPrint(
+          "新格式化上下文需要封装所有浮动元素，获取 clearance 偏移: {}",
+          clearance);
 #ifdef DCHECK_ALWAYS_ON
       if (!RuntimeEnabledFeatures::CSSLineClampEnabled() ||
           !line_clamp_data_.previous_inflow_position_when_clamped) {
@@ -1257,7 +1661,12 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
                       EClear::kBoth));
       }
 #endif
+      LayoutUnit old_intrinsic_size = intrinsic_block_size_;
       intrinsic_block_size_ = std::max(intrinsic_block_size_, clearance);
+      if (intrinsic_block_size_ != old_intrinsic_size) {
+        ipid_depth_log.FPrint("由于 clearance，内在块大小从 {} 更新为 {}",
+                              old_intrinsic_size, intrinsic_block_size_);
+      }
     }
 
     if (!container_builder_.BfcBlockOffset()) {
@@ -1267,11 +1676,18 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
       // border, for instance). If we're a new formatting context, though, we
       // shouldn't be here, because then the offset should already have been
       // determined.
+      ipid_depth_log.FPrint(
+          "容器的 BFC 块偏移仍未知，需要解析 BFC "
+          "块偏移。当前不是新格式化上下文: {}",
+          ipid::btos(!constraint_space.IsNewFormattingContext()));
       DCHECK(!constraint_space.IsNewFormattingContext());
       if (!ResolveBfcBlockOffset(previous_inflow_position)) {
+        ipid_depth_log.FPrint("ResolveBfcBlockOffset 返回 false，中止布局。");
         return container_builder_.Abort(LayoutResult::kBfcBlockOffsetResolved);
       }
       DCHECK(container_builder_.BfcBlockOffset());
+      ipid_depth_log.FPrint("成功解析 BFC 块偏移: {}",
+                            *container_builder_.BfcBlockOffset());
     } else {
       // If we are a quirky container, we ignore any quirky margins and just
       // consider normal margins to extend our size.  Other UAs perform this
@@ -1280,12 +1696,21 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
       LayoutUnit margin_strut_sum = node_.IsQuirkyContainer()
                                         ? end_margin_strut.QuirkyContainerSum()
                                         : end_margin_strut.Sum();
+      ipid_depth_log.FPrint(
+          "计算 margin strut 总和。是 quirky 容器: {}，margin strut: "
+          "{}，margin strut 总和: {}",
+          ipid::btos(node_.IsQuirkyContainer()),
+          ipid::GetMarginStrutString(end_margin_strut), margin_strut_sum);
 
       if (constraint_space.HasKnownFragmentainerBlockSize()) {
         LayoutUnit new_margin_strut_sum = AdjustedMarginAfterFinalChildFragment(
             container_builder_, previous_inflow_position->logical_block_offset,
             margin_strut_sum);
         if (new_margin_strut_sum != margin_strut_sum) {
+          ipid_depth_log.FPrint(
+              "在已知分片器块大小的情况下，调整后的 margin strut 总和从 {} "
+              "变为 {}，设置被分片线截断标志。",
+              margin_strut_sum, new_margin_strut_sum);
           container_builder_.SetIsTruncatedByFragmentationLine();
           margin_strut_sum = new_margin_strut_sum;
         }
@@ -1299,32 +1724,61 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
       // children (if any at all, that is), it means that the resulting end
       // margin strut actually pushes us down, and it should obviously not be
       // doubly accounted for as our block size.
-      intrinsic_block_size_ = std::max(
-          intrinsic_block_size_,
-          previous_inflow_position->logical_block_offset + margin_strut_sum);
+      LayoutUnit candidate_size =
+          previous_inflow_position->logical_block_offset + margin_strut_sum;
+      LayoutUnit old_intrinsic_size = intrinsic_block_size_;
+      intrinsic_block_size_ = std::max(intrinsic_block_size_, candidate_size);
+      ipid_depth_log.FPrint(
+          "计算内在块大小: 上一个内流位置的逻辑块偏移 {} + margin strut 总和 "
+          "{} = {}，原内在大小: {}，更新后: {}",
+          previous_inflow_position->logical_block_offset, margin_strut_sum,
+          candidate_size, old_intrinsic_size, intrinsic_block_size_);
     }
 
     if (!ShouldIncludeBlockEndBorderPadding(container_builder_)) {
       // The block-end edge isn't in this fragment. We either haven't got there
       // yet, or we're past it (and are overflowing). So don't add trailing
       // border/padding.
+      ipid_depth_log.FPrint(
+          "不应包含块结尾的 border/padding，清除容器构建器的块结尾 "
+          "border/padding。");
       container_builder_.ClearBorderScrollbarPaddingBlockEnd();
     }
-    intrinsic_block_size_ += BorderScrollbarPadding().block_end;
+    LayoutUnit added_padding = BorderScrollbarPadding().block_end;
+    ipid_depth_log.FPrint(
+        "在内在块大小上添加块结尾 border/padding: {}，更新前: {}",
+        added_padding, intrinsic_block_size_);
+    intrinsic_block_size_ += added_padding;
+    ipid_depth_log.FPrint("更新后的内在块大小: {}，重置结束 margin strut。",
+                          intrinsic_block_size_);
     end_margin_strut = MarginStrut();
   } else {
     // Update our intrinsic block size to be just past the block-end border edge
     // of the last in-flow child. The pending margin is to be propagated to our
     // container, so ignore it.
+    LayoutUnit old_intrinsic_size = intrinsic_block_size_;
     intrinsic_block_size_ = std::max(
         intrinsic_block_size_, previous_inflow_position->logical_block_offset);
+    ipid_depth_log.FPrint(
+        "不符合特殊条件，将内在块大小更新为最后内流子元素的块结尾边框边缘后的位"
+        "置。原大小: {}，上一个内流位置: {}，更新后: {}",
+        old_intrinsic_size, previous_inflow_position->logical_block_offset,
+        intrinsic_block_size_);
   }
 
   LayoutUnit unconstrained_intrinsic_block_size = intrinsic_block_size_;
+  std::optional<LayoutUnit> quirky_body_margin =
+      CalculateQuirkyBodyMarginBlockSum(end_margin_strut);
+  ipid_depth_log.FPrint(
+      "保存无约束内在块大小: {}，计算 quirky body margin: {} (若为 -999999 "
+      "表示无值)",
+      unconstrained_intrinsic_block_size,
+      quirky_body_margin.value_or(LayoutUnit(-999999)));
   intrinsic_block_size_ = ClampIntrinsicBlockSize(
       constraint_space, Node(), GetBreakToken(), BorderScrollbarPadding(),
-      intrinsic_block_size_,
-      CalculateQuirkyBodyMarginBlockSum(end_margin_strut));
+      intrinsic_block_size_, quirky_body_margin);
+  ipid_depth_log.FPrint("经过 ClampIntrinsicBlockSize 约束后的内在块大小: {}",
+                        intrinsic_block_size_);
 
   // In order to calculate the block-size for the fragment, we need to compare
   // the combined intrinsic block-size of all fragments to e.g. specified
@@ -1343,13 +1797,23 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   if (GetBreakToken() && !container_builder_.IsFragmentainerBoxType())
       [[unlikely]] {
     previously_consumed_block_size = GetBreakToken()->ConsumedBlockSize();
+    ipid_depth_log.FPrint(
+        "有中断 token 且不是分片器盒类型，之前消耗的块大小: {}",
+        previously_consumed_block_size);
   }
 
   // Recompute the block-axis size now that we know our content size.
-  border_box_size.block_size = ComputeBlockSizeForFragment(
-      constraint_space, Node(), BorderPadding(),
-      previously_consumed_block_size + intrinsic_block_size_,
+  LayoutUnit combined_size =
+      previously_consumed_block_size + intrinsic_block_size_;
+  ipid_depth_log.FPrint(
+      "重新计算块轴大小。之前消耗: {}，当前内在: {}，结合后: {}，内联大小: {}",
+      previously_consumed_block_size, intrinsic_block_size_, combined_size,
       border_box_size.inline_size);
+  border_box_size.block_size =
+      ComputeBlockSizeForFragment(constraint_space, Node(), BorderPadding(),
+                                  combined_size, border_box_size.inline_size);
+  ipid_depth_log.FPrint("计算得到的最终边框盒大小: {}",
+                        ipid::GetLogicalSizeString(border_box_size));
   container_builder_.SetFragmentsTotalBlockSize(border_box_size.block_size);
 
   // If our BFC block-offset is still unknown, we check:
@@ -1360,9 +1824,18 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   if (!container_builder_.BfcBlockOffset() &&
       (border_box_size.block_size || GetBreakToken() ||
        container_builder_.FoundColumnSpanner())) {
-    if (!ResolveBfcBlockOffset(previous_inflow_position))
+    ipid_depth_log.FPrint(
+        "BFC 块偏移仍未知且满足条件：非零块大小: {}，有中断 token: "
+        "{}，发现列跨越器: {}",
+        ipid::btos(border_box_size.block_size), ipid::btos(GetBreakToken()),
+        ipid::btos(container_builder_.FoundColumnSpanner()));
+    if (!ResolveBfcBlockOffset(previous_inflow_position)) {
+      ipid_depth_log.FPrint("ResolveBfcBlockOffset 失败，中止布局。");
       return container_builder_.Abort(LayoutResult::kBfcBlockOffsetResolved);
+    }
     DCHECK(container_builder_.BfcBlockOffset());
+    ipid_depth_log.FPrint("成功解析 BFC 块偏移: {}",
+                          *container_builder_.BfcBlockOffset());
   }
 
   if (container_builder_.BfcBlockOffset()) {
@@ -1373,8 +1846,15 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
     const LayoutUnit initial_block_size = ComputeInitialBlockSizeForFragment(
         constraint_space, Node(), BorderPadding(), kIndefiniteSize,
         border_box_size.inline_size);
-    if (border_box_size.block_size != intrinsic_block_size_ ||
-        initial_block_size != kIndefiniteSize) {
+    bool should_reset_margin =
+        (border_box_size.block_size != intrinsic_block_size_ ||
+         initial_block_size != kIndefiniteSize);
+    ipid_depth_log.FPrint(
+        "已知 BFC 块偏移。计算的初始块大小: {}，最终边框盒块大小: "
+        "{}，内在块大小: {}，是否重置 margin: {}",
+        initial_block_size, border_box_size.block_size, intrinsic_block_size_,
+        ipid::btos(should_reset_margin));
+    if (should_reset_margin) {
       end_margin_strut = MarginStrut();
     }
   }
@@ -1382,82 +1862,120 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   // List markers should have been positioned if we had line boxes, or boxes
   // that have line boxes. If there were no line boxes, position without line
   // boxes.
-  if (container_builder_.GetUnpositionedListMarker() &&
-      ShouldPlaceUnpositionedListMarker() &&
+  auto has_unpositioned_marker = container_builder_.GetUnpositionedListMarker();
+  bool should_place_marker = ShouldPlaceUnpositionedListMarker();
+  bool has_inflow_break = container_builder_.HasInflowChildBreakInside();
+  ipid_depth_log.FPrint(
+      "检查列表标记状态: 有未定位标记: {}，应该放置: {}，有内流中断: {}",
+      ipid::btos(!!has_unpositioned_marker), ipid::btos(should_place_marker),
+      ipid::btos(has_inflow_break));
+  if (has_unpositioned_marker && should_place_marker &&
       // If the list-item is block-fragmented, leave it unpositioned and expect
       // following fragments have a line box.
-      !container_builder_.HasInflowChildBreakInside()) {
-    if (!PositionListMarkerWithoutLineBoxes(previous_inflow_position))
+      !has_inflow_break) {
+    ipid_depth_log.FPrint("尝试在没有行框的情况下定位列表标记。");
+    if (!PositionListMarkerWithoutLineBoxes(previous_inflow_position)) {
+      ipid_depth_log.FPrint(
+          "PositionListMarkerWithoutLineBoxes 失败，中止布局。");
       return container_builder_.Abort(LayoutResult::kBfcBlockOffsetResolved);
+    }
   }
 
   container_builder_.SetEndMarginStrut(end_margin_strut);
   container_builder_.SetIntrinsicBlockSize(intrinsic_block_size_);
+  ipid_depth_log.FPrint(
+      "设置容器构建器的结束 margin strut: {} 和内在块大小: {}",
+      ipid::GetMarginStrutString(end_margin_strut), intrinsic_block_size_);
 
   if (container_builder_.BfcBlockOffset()) {
     // If we know our BFC block-offset we should have correctly placed all
     // adjoining objects, and shouldn't propagate this information to siblings.
+    ipid_depth_log.FPrint("已知 BFC 块偏移，重置邻接对象类型。");
     container_builder_.ResetAdjoiningObjectTypes();
   } else {
     // If we don't know our BFC block-offset yet, we know that for
     // margin-collapsing purposes we are self-collapsing.
+    ipid_depth_log.FPrint("不知道 BFC 块偏移，设置为自折叠。");
     container_builder_.SetIsSelfCollapsing();
 
     // If we've been forced at a particular BFC block-offset, (either from
     // clearance past adjoining floats, or a re-layout), we can safely set our
     // BFC block-offset now.
     if (constraint_space.ForcedBfcBlockOffset()) {
-      container_builder_.SetBfcBlockOffset(
-          *constraint_space.ForcedBfcBlockOffset());
+      LayoutUnit forced_offset = *constraint_space.ForcedBfcBlockOffset();
+      ipid_depth_log.FPrint(
+          "约束空间中有强制的 BFC 块偏移: {}，设置给容器构建器。",
+          forced_offset);
+      container_builder_.SetBfcBlockOffset(forced_offset);
 
       // Also make sure that this is treated as a valid class C breakpoint (if
       // it is one).
       if (constraint_space.IsPushedByFloats()) {
+        ipid_depth_log.FPrint("约束空间被浮动元素推动，设置标志。");
         container_builder_.SetIsPushedByFloats();
       }
     }
   }
 
   if (InvolvedInBlockFragmentation(container_builder_)) [[unlikely]] {
+    ipid_depth_log.FPrint("参与块分片，调用 FinalizeForFragmentation。");
     BreakStatus status = FinalizeForFragmentation();
+    ipid_depth_log.FPrint("分片处理结果: {}", static_cast<int>(status));
     if (status != BreakStatus::kContinue) {
       if (status == BreakStatus::kNeedsEarlierBreak) {
+        ipid_depth_log.FPrint("需要更早的中断，中止布局。");
         return container_builder_.Abort(LayoutResult::kNeedsEarlierBreak);
       }
       DCHECK_EQ(status, BreakStatus::kDisableFragmentation);
+      ipid_depth_log.FPrint("禁用分片，中止布局。");
       return container_builder_.Abort(LayoutResult::kDisableFragmentation);
     }
 
     // Read the intrinsic block-size back, since it may have been reduced due to
     // fragmentation.
+    LayoutUnit old_intrinsic_size = intrinsic_block_size_;
     intrinsic_block_size_ = container_builder_.IntrinsicBlockSize();
+    if (intrinsic_block_size_ != old_intrinsic_size) {
+      ipid_depth_log.FPrint("由于分片，内在块大小从 {} 变为 {}",
+                            old_intrinsic_size, intrinsic_block_size_);
+    }
   } else {
 #if DCHECK_IS_ON()
   // If we're not participating in a fragmentation context, no block
   // fragmentation related fields should have been set.
+  ipid_depth_log.FPrint("不参与分片上下文，检查分片相关字段。");
   container_builder_.CheckNoBlockFragmentation();
 #endif
   }
 
   // At this point, perform any final table-cell adjustments needed.
   if (constraint_space.IsTableCell()) {
+    ipid_depth_log.FPrint("进行表格单元格的最终调整，内在块大小: {}",
+                          intrinsic_block_size_);
     FinalizeTableCellLayout(intrinsic_block_size_, &container_builder_);
   } else {
+    ipid_depth_log.FPrint("对齐块内容，无约束内在块大小: {}",
+                          unconstrained_intrinsic_block_size);
     AlignBlockContent(Style(), GetBreakToken(),
                       unconstrained_intrinsic_block_size, container_builder_);
   }
 
+  ipid_depth_log.FPrint("处理脚本定位的元素和特殊后代。");
   container_builder_.HandleOofsAndSpecialDescendants();
 
   if (constraint_space.GetBaselineAlgorithmType() ==
       BaselineAlgorithmType::kInlineBlock) {
+    ipid_depth_log.FPrint(
+        "基线算法类型为 inline-block，设置使用最后一个基线作为内联基线。");
     container_builder_.SetUseLastBaselineForInlineBaseline();
   }
 
   // An exclusion space is confined to nodes within the same formatting context.
   if (constraint_space.IsNewFormattingContext()) {
+    ipid_depth_log.FPrint("是新格式化上下文，设置空的排除空间。");
     container_builder_.SetExclusionSpace(ExclusionSpace());
   } else {
+    ipid_depth_log.FPrint("非新格式化上下文，设置 line-clamp 相关信息。");
     container_builder_.SetLinesUntilClamp(
         line_clamp_data_.data.LinesUntilClamp(/*show_measured_lines*/ true));
     container_builder_.SetLineClampAfterLayoutObject(
@@ -1465,9 +1983,11 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
   }
 
   if (constraint_space.UseFirstLineStyle()) {
+    ipid_depth_log.FPrint("使用首行样式，设置样式变体为 FirstLine。");
     container_builder_.SetStyleVariant(StyleVariant::kFirstLine);
   }
 
+  ipid_depth_log.FPrint("完成布局，转换为盒片段返回。");
   return container_builder_.ToBoxFragment();
 }
 
@@ -2209,6 +2729,22 @@ LayoutResult::EStatus BlockLayoutAlgorithm::HandleInflow(
     PreviousInflowPosition* previous_inflow_position,
     InlineChildLayoutContext* inline_child_layout_context,
     const InlineBreakToken** previous_inline_break_token) {
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::HandleInflow");
+
+  ipid_depth_log.FPrint(
+      "开始处理流入布局的子元素 {}。\n"
+      "子元素类型：{}\n"
+      "子元素断开令牌：{}\n"
+      "之前的流入位置：logical_block_offset={}，margin_strut={}，block_end_"
+      "annotation_space={}\n"
+      "之前的内联断开令牌：{}",
+      ipid::GetNodeStr(child), child.IsBlock() ? "block" : "inline",
+      child_break_token ? "存在" : "不存在",
+      previous_inflow_position->logical_block_offset,
+      ipid::GetMarginStrutString(previous_inflow_position->margin_strut),
+      previous_inflow_position->block_end_annotation_space,
+      *previous_inline_break_token ? "存在" : "不存在");
+
   DCHECK(child);
   DCHECK(!child.IsFloating());
   DCHECK(!child.IsOutOfFlowPositioned());
@@ -2216,21 +2752,51 @@ LayoutResult::EStatus BlockLayoutAlgorithm::HandleInflow(
 
   auto* child_inline_node = DynamicTo<InlineNode>(child);
   if (child_inline_node) {
+    ipid_depth_log.FPrint("检测到子元素 {} 是内联节点，尝试重用缓存中的行框。",
+                          ipid::GetNodeStr(child));
     // Add reusable line boxes from |previous_result_| if any.
     if (!abort_when_bfc_block_offset_updated_ && !child_break_token &&
         previous_result_) {
+      ipid_depth_log.FPrint(
+          "条件满足（未中止BFC块偏移更新、无子元素断开令牌、有前一结果），"
+          "尝试从缓存重用片段。");
       DCHECK(!*previous_inline_break_token);
       if (TryReuseFragmentsFromCache(*child_inline_node,
                                      previous_inflow_position,
-                                     previous_inline_break_token))
+                                     previous_inline_break_token)) {
+        ipid_depth_log.FPrint(
+            "成功从缓存重用片段，返回 LayoutResult::kSuccess。");
         return LayoutResult::kSuccess;
+      } else {
+        ipid_depth_log.FPrint("未能从缓存重用片段，继续正常处理。");
+      }
+    } else {
+      ipid_depth_log.FPrint("条件不满足，无法重用缓存片段，继续正常处理。");
     }
+  } else {
+    ipid_depth_log.FPrint("子元素 {} 是块节点，直接进入正常处理流程。",
+                          ipid::GetNodeStr(child));
   }
 
   bool has_clearance_past_adjoining_floats =
       !container_builder_.BfcBlockOffset() && child.IsBlock() &&
       HasClearancePastAdjoiningFloats(
           container_builder_.GetAdjoiningObjectTypes(), child.Style(), Style());
+
+  ipid_depth_log.FPrint(
+      "检查子元素 {} 是否需要清除相邻浮动。\n"
+      "条件检查：BFC 块偏移为：{}，子元素为：{}"
+      "，HasClearancePastAdjoiningFloats={"
+      "}\n"
+      "最终结果：{}",
+      ipid::GetNodeStr(child),
+      container_builder_.BfcBlockOffset().value_or(LayoutUnit(-114514)),
+      child.IsBlock() ? "块级元素（BlockNode）" : "行内元素（InlineNode）",
+      HasClearancePastAdjoiningFloats(
+          container_builder_.GetAdjoiningObjectTypes(), child.Style(), Style())
+          ? "true"
+          : "false",
+      has_clearance_past_adjoining_floats ? "需要清除" : "不需要清除");
 
   std::optional<LayoutUnit> forced_bfc_block_offset;
   bool is_pushed_by_floats = false;
@@ -2244,8 +2810,14 @@ LayoutResult::EStatus BlockLayoutAlgorithm::HandleInflow(
   // Note this logic is copied to TryReuseFragmentsFromCache(), they need to
   // keep in sync.
   if (has_clearance_past_adjoining_floats) {
-    if (!ResolveBfcBlockOffset(previous_inflow_position))
+    ipid_depth_log.FPrint("子元素 {} 需要清除相邻浮动，开始解析 BFC 块偏移。",
+                          ipid::GetNodeStr(child));
+    if (!ResolveBfcBlockOffset(previous_inflow_position)) {
+      ipid_depth_log.FPrint(
+          "BFC 块偏移解析失败，返回 LayoutResult::kBfcBlockOffsetResolved。");
       return LayoutResult::kBfcBlockOffsetResolved;
+    }
+    ipid_depth_log.FPrint("BFC 块偏移解析成功。");
 
     // If we had clearance past any adjoining floats, we already know where the
     // child is going to be (the child's margins won't have any effect).
@@ -2255,25 +2827,66 @@ LayoutResult::EStatus BlockLayoutAlgorithm::HandleInflow(
     forced_bfc_block_offset =
         GetExclusionSpace().ClearanceOffset(child.Style().Clear(Style()));
     is_pushed_by_floats = true;
+
+    ipid_depth_log.FPrint("设置强制 BFC 块偏移为 {}px，标记子元素被浮动推移。",
+                          forced_bfc_block_offset.value());
+  } else {
+    ipid_depth_log.FPrint(
+        "子元素 {} 不需要清除相邻浮动，跳过BFC块偏移解析步骤。",
+        ipid::GetNodeStr(child));
   }
 
   // Perform layout on the child.
+  ipid_depth_log.FPrint("开始计算子元素 {} 的数据和约束空间。",
+                        ipid::GetNodeStr(child));
   InflowChildData child_data =
       ComputeChildData(*previous_inflow_position, child, child_break_token,
                        /* is_new_fc */ false);
   child_data.is_pushed_by_floats = is_pushed_by_floats;
+
+  ipid_depth_log.FPrint("子元素数据计算完成，is_pushed_by_floats = {}。",
+                        child_data.is_pushed_by_floats);
+
   ConstraintSpace child_space = CreateConstraintSpaceForChild(
       child, child_break_token, child_data, ChildAvailableSize(),
       /* is_new_fc */ false, forced_bfc_block_offset,
       has_clearance_past_adjoining_floats,
       previous_inflow_position->block_end_annotation_space);
+
+  ipid_depth_log.FPrint("为子元素 {} 创建的约束空间：{}。",
+                        ipid::GetNodeStr(child),
+                        ipid::GetConstraintSpaceString(child_space));
+
   const LayoutResult* layout_result =
       LayoutInflow(child_space, child_break_token, early_break_,
                    column_spanner_path_, &child, inline_child_layout_context);
 
+  ipid_depth_log.FPrint(
+      "子元素 {} 布局完成，布局结果状态：{}。", ipid::GetNodeStr(child),
+      ipid::GetLayoutResultStatusString(layout_result->Status()));
+
   // To save space of the stack when we recurse into |BlockNode::Layout|
   // above, the rest of this function is continued within |FinishInflow|.
   // However it should be read as one function.
+  ipid_depth_log.FPrint(
+      "HandleInflow 处理完成，调用 FinishInflow 继续后续逻辑。\n"
+      "传递给 FinishInflow 的参数：\n"
+      "  子元素：{}\n"
+      "  子元素断开令牌：{}\n"
+      "  约束空间：{}\n"
+      "  是否清除相邻浮动：{}\n"
+      "  布局结果状态：{}\n"
+      "  子元素数据：is_pushed_by_floats={}\n"
+      "  之前的流入位置：logical_block_offset={}\n"
+      "  之前的内联断开令牌：{}",
+      ipid::GetNodeStr(child), child_break_token ? "存在" : "不存在",
+      ipid::GetConstraintSpaceString(child_space),
+      has_clearance_past_adjoining_floats ? "是" : "否",
+      ipid::GetLayoutResultStatusString(layout_result->Status()),
+      child_data.is_pushed_by_floats,
+      previous_inflow_position->logical_block_offset,
+      *previous_inline_break_token ? "存在" : "不存在");
+
   return FinishInflow(child, child_break_token, child_space,
                       has_clearance_past_adjoining_floats,
                       std::move(layout_result), &child_data,
@@ -2291,32 +2904,68 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     PreviousInflowPosition* previous_inflow_position,
     InlineChildLayoutContext* inline_child_layout_context,
     const InlineBreakToken** previous_inline_break_token) {
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::FinishInflow");
+
+  ipid_depth_log.FPrint(
+      "开始完成子元素 {} 的内联布局。\n"
+      "子元素布局结果状态：{}\n"
+      "子元素是否为自折叠：{}\n"
+      "开辟的空间：{}",
+      ipid::GetNodeStr(child),
+      ipid::GetLayoutResultStatusString(layout_result->Status()),
+      ipid::btos(layout_result->IsSelfCollapsing()),
+      ipid::GetConstraintSpaceString(child_space));
+
   // If a kNeedsLineClampRelayout layout result was not handled in
   // HandleNonSuccessfulLayoutResult, it needs to be propagated upwards until
   // the BFC root.
   if (layout_result->Status() == LayoutResult::kNeedsLineClampRelayout) {
+    ipid_depth_log.FPrint(
+        "子元素布局结果状态为 kNeedsLineClampRelayout（需要行夹重新布局），"
+        "这表示行夹逻辑需要重新布局，必须向上传播到 BFC 根元素。"
+        "设置 LinesUntilClamp 为 {}，传播后的布局对象为 {}。",
+        layout_result->LinesUntilClamp(),
+        ipid::GetNodeStr(
+            line_clamp_data_.PropagateClampAfterLayoutObject(layout_result)));
     DCHECK(line_clamp_data_.data.IsMeasureUntilBfcOffset());
     container_builder_.SetLinesUntilClamp(layout_result->LinesUntilClamp());
     container_builder_.SetLineClampAfterLayoutObject(
         line_clamp_data_.PropagateClampAfterLayoutObject(layout_result));
+    ipid_depth_log.FPrint("向上传播 kNeedsLineClampRelayout 状态。");
     return LayoutResult::kNeedsLineClampRelayout;
   }
 
   std::optional<LayoutUnit> child_bfc_block_offset =
       layout_result->BfcBlockOffset();
+  ipid_depth_log.FPrint("子元素的 BFC 块偏移为：{}",
+                        child_bfc_block_offset
+                            ? std::to_string(child_bfc_block_offset->ToInt())
+                            : "nullopt");
 
   bool is_self_collapsing = layout_result->IsSelfCollapsing();
+  ipid_depth_log.FPrint("子元素是否为自折叠：{}",
+                        ipid::btos(is_self_collapsing));
 
   // "Normal child" here means non-self-collapsing. Even self-collapsing
   // children may be cleared by floats, if they have a forced BFC block-offset.
   bool normal_child_had_clearance =
       layout_result->IsPushedByFloats() && !is_self_collapsing;
+  ipid_depth_log.FPrint(
+      "普通子元素是否被浮动推下（有清除）：{}，"
+      "layout_result->IsPushedByFloats() 为 {}，"
+      "!is_self_collapsing 为 {}。",
+      ipid::btos(normal_child_had_clearance),
+      ipid::btos(layout_result->IsPushedByFloats()),
+      ipid::btos(!is_self_collapsing));
 
   // A child may have aborted its layout if it resolved its BFC block-offset.
   // If we don't have a BFC block-offset yet, we need to propagate the abort
   // signal up to our parent.
   if (layout_result->Status() == LayoutResult::kBfcBlockOffsetResolved &&
       !container_builder_.BfcBlockOffset()) {
+    ipid_depth_log.FPrint(
+        "子元素布局状态为 kBfcBlockOffsetResolved（已解析 BFC 块偏移），"
+        "且当前容器尚未解析 BFC 块偏移，需要向上传播终止信号。");
     // There's no need to do anything apart from resolving the BFC block-offset
     // here, so make sure that it aborts before trying to position floats or
     // anything like that, which would just be waste of time.
@@ -2327,6 +2976,11 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     abort_when_bfc_block_offset_updated_ = true;
 
     LayoutUnit bfc_block_offset = *child_bfc_block_offset;
+    bool old_abort_flag = abort_when_bfc_block_offset_updated_;
+    abort_when_bfc_block_offset_updated_ = true;
+    ipid_depth_log.FPrint(
+        "设置终止标志为 true（之前为 {}），并使用子元素的 BFC 块偏移：{}",
+        ipid::btos(old_abort_flag), bfc_block_offset);
 
     if (normal_child_had_clearance) {
       // If the child has the same clearance-offset as ourselves it means that
@@ -2334,9 +2988,16 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       // been pushed by floats).
       if (GetConstraintSpace().ClearanceOffset() ==
           child_space.ClearanceOffset()) {
+        ipid_depth_log.FPrint(
+            "普通子元素有清除，且清除偏移与当前容器相同，"
+            "因此将当前容器也标记为被浮动推下。");
         container_builder_.SetIsPushedByFloats();
       } else {
-        bfc_block_offset = NextBorderEdge(*previous_inflow_position);
+        LayoutUnit next_border_edge = NextBorderEdge(*previous_inflow_position);
+        ipid_depth_log.FPrint(
+            "普通子元素有清除但偏移不同，将 BFC 块偏移调整为下一个边框边缘：{}",
+            next_border_edge);
+        bfc_block_offset = next_border_edge;
       }
     }
 
@@ -2344,24 +3005,41 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     // block-offset. In this case we'll have a "forced" BFC block-offset
     // present, but we shouldn't apply it (instead preferring the child's new
     // BFC block-offset).
+    ipid_depth_log.FPrint(
+        "检查祖先是否有清除过去的相邻浮动：{}",
+        ipid::btos(
+            GetConstraintSpace().AncestorHasClearancePastAdjoiningFloats()));
     DCHECK(!GetConstraintSpace().AncestorHasClearancePastAdjoiningFloats());
 
+    ipid_depth_log.FPrint("尝试解析当前容器的 BFC 块偏移为：{}",
+                          bfc_block_offset);
     if (!ResolveBfcBlockOffset(previous_inflow_position, bfc_block_offset,
                                /* forced_bfc_block_offset */ std::nullopt)) {
+      ipid_depth_log.FPrint(
+          "解析 BFC 块偏移失败，返回 kBfcBlockOffsetResolved。");
       return LayoutResult::kBfcBlockOffsetResolved;
     }
+    ipid_depth_log.FPrint(
+        "成功解析 BFC 块偏移为：{}。",
+        container_builder_.BfcBlockOffset()
+            ? std::to_string(container_builder_.BfcBlockOffset()->ToInt())
+            : "nullopt");
   }
 
   // We have special behavior for a self-collapsing child which gets pushed
   // down due to clearance, see comment inside |ComputeInflowPosition|.
   bool self_collapsing_child_had_clearance =
       is_self_collapsing && has_clearance_past_adjoining_floats;
+  ipid_depth_log.FPrint("自折叠子元素是否因清除而被推下：{}",
+                        ipid::btos(self_collapsing_child_had_clearance));
 
   // We try and position the child within the block formatting-context. This
   // may cause our BFC block-offset to be resolved, in which case we should
   // abort our layout if needed.
   if (!child_bfc_block_offset) {
     DCHECK(is_self_collapsing);
+    ipid_depth_log.FPrint(
+        "子元素是自折叠的且尚未确定 BFC 块偏移，检查清除逻辑。");
     if (child_space.HasClearanceOffset() && child.Style().HasClear()) {
       // This is a self-collapsing child that we collapsed through, so we have
       // to detect clearance manually. See if the child's hypothetical border
@@ -2369,23 +3047,49 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       // clearance before it.
       LayoutUnit child_block_offset_estimate =
           BfcBlockOffset() + layout_result->EndMarginStrut().Sum();
-      if (child_block_offset_estimate < child_space.ClearanceOffset())
+      ipid_depth_log.FPrint(
+          "计算子元素的假设块偏移：当前 BFC 块偏移 {} + 结束边距 strut 总和 {} "
+          "= {}",
+          BfcBlockOffset(), layout_result->EndMarginStrut().Sum(),
+          child_block_offset_estimate);
+      if (child_block_offset_estimate < child_space.ClearanceOffset()) {
+        ipid_depth_log.FPrint(
+            "假设块偏移 {} 小于清除偏移 {}，因此自折叠子元素有清除。",
+            child_block_offset_estimate, child_space.ClearanceOffset());
         self_collapsing_child_had_clearance = true;
+      }
     }
   }
 
   bool child_had_clearance =
       self_collapsing_child_had_clearance || normal_child_had_clearance;
+  ipid_depth_log.FPrint("子元素最终是否有清除：{}",
+                        ipid::btos(child_had_clearance));
   if (child_had_clearance) {
     // The child has clearance. Clearance inhibits margin collapsing and acts as
     // spacing before the block-start margin of the child. Our BFC block offset
     // is therefore resolvable, and if it hasn't already been resolved, we'll
     // do it now to separate the child's collapsed margin from this container.
-    if (!ResolveBfcBlockOffset(previous_inflow_position))
+    ipid_depth_log.FPrint(
+        "子元素有清除，清除会阻止边距折叠并作为子元素块起始边距之前的间距，"
+        "因此需要解析当前容器的 BFC 块偏移。");
+    if (!ResolveBfcBlockOffset(previous_inflow_position)) {
+      ipid_depth_log.FPrint(
+          "解析 BFC 块偏移失败，返回 kBfcBlockOffsetResolved。");
       return LayoutResult::kBfcBlockOffsetResolved;
+    }
+    ipid_depth_log.FPrint(
+        "成功解析 BFC 块偏移为：{}。",
+        container_builder_.BfcBlockOffset()
+            ? std::to_string(container_builder_.BfcBlockOffset()->ToInt())
+            : "nullopt");
   } else if (layout_result->SubtreeModifiedMarginStrut()) {
     // The child doesn't have clearance, and modified its incoming
     // margin-strut. Propagate this information up to our parent if needed.
+    ipid_depth_log.FPrint(
+        "子元素没有清除，但修改了其传入的边距 "
+        "strut（{}），需要向上传播此信息。",
+        ipid::btos(layout_result->SubtreeModifiedMarginStrut()));
     SetSubtreeModifiedMarginStrutIfNeeded();
   }
 
@@ -2394,19 +3098,31 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     // Layout wasn't able to determine the BFC block-offset of the child. This
     // has to mean that the child is self-collapsing.
     DCHECK(is_self_collapsing);
+    ipid_depth_log.FPrint("子元素是自折叠的且 BFC 块偏移未知。");
 
     if (container_builder_.BfcBlockOffset() &&
         layout_result->Status() == LayoutResult::kSuccess) {
       // Since we know our own BFC block-offset, though, we can calculate that
       // of the child as well.
+      ipid_depth_log.FPrint(
+          "容器已有 BFC 块偏移且布局成功，计算自折叠子元素的 BFC 块偏移。");
       child_bfc_block_offset = PositionSelfCollapsingChildWithParentBfc(
           child, child_space, *child_data, *layout_result);
+      ipid_depth_log.FPrint(
+          "计算得到子元素的 BFC 块偏移：{}",
+          child_bfc_block_offset
+              ? std::to_string(child_bfc_block_offset->ToInt())
+              : "nullopt");
 
       // We may need to relayout this child if it had any (adjoining) objects
       // which were positioned in the incorrect place.
       if (layout_result->GetPhysicalFragment()
               .HasAdjoiningObjectDescendants() &&
           *child_bfc_block_offset != child_space.ExpectedBfcBlockOffset()) {
+        ipid_depth_log.FPrint(
+            "子元素有相邻对象后代，且计算的 BFC 块偏移 {} 与期望的 {} 不匹配，"
+            "需要重新布局自折叠子元素。",
+            *child_bfc_block_offset, child_space.ExpectedBfcBlockOffset());
         self_collapsing_child_needs_relayout = true;
       }
     }
@@ -2418,9 +3134,21 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     // The child's BFC block-offset is known, and since there's no clearance,
     // this container will get the same offset, unless it has already been
     // resolved.
+    ipid_depth_log.FPrint(
+        "子元素是非自折叠的且没有清除，其 BFC 块偏移已知 {}，"
+        "尝试使用此偏移解析当前容器的 BFC 块偏移。",
+        *child_bfc_block_offset);
     if (!ResolveBfcBlockOffset(previous_inflow_position,
-                               *child_bfc_block_offset))
+                               *child_bfc_block_offset)) {
+      ipid_depth_log.FPrint(
+          "解析 BFC 块偏移失败，返回 kBfcBlockOffsetResolved。");
       return LayoutResult::kBfcBlockOffsetResolved;
+    }
+    ipid_depth_log.FPrint(
+        "成功解析 BFC 块偏移为：{}。",
+        container_builder_.BfcBlockOffset()
+            ? std::to_string(container_builder_.BfcBlockOffset()->ToInt())
+            : "nullopt");
   }
 
   // We need to re-layout a self-collapsing child if it was affected by
@@ -2440,15 +3168,29 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
   // The resulting margin strut in the above example will be {40, -30}. See
   // |ComputeInflowPosition| for how this end margin strut is used.
   if (self_collapsing_child_had_clearance) {
+    ipid_depth_log.FPrint(
+        "自折叠子元素因清除而被推下，需要重新布局以产生新的边距 strut。");
     MarginStrut margin_strut;
     margin_strut.Append(child_data->margins.block_start,
                         child.Style().HasMarginBlockStartQuirk());
+    ipid_depth_log.FPrint(
+        "创建新的边距 strut，追加块起始边距 {}（是否为 quirk 模式：{}）。",
+        child_data->margins.block_start,
+        ipid::btos(child.Style().HasMarginBlockStartQuirk()));
 
     // We only need to relayout if the new margin strut is different to the
     // previous one.
     if (child_data->margin_strut != margin_strut) {
+      ipid_depth_log.FPrint(
+          "新的边距 strut {} 与之前的 {} 不同，需要重新布局。",
+          ipid::GetMarginStrutString(margin_strut),
+          ipid::GetMarginStrutString(child_data->margin_strut));
       child_data->margin_strut = margin_strut;
       self_collapsing_child_needs_relayout = true;
+      ipid_depth_log.FPrint(
+          "设置 self_collapsing_child_needs_relayout 为 true。");
+    } else {
+      ipid_depth_log.FPrint("边距 strut 没有变化，无需重新布局。");
     }
   }
 
@@ -2459,6 +3201,12 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
   if ((layout_result->Status() == LayoutResult::kBfcBlockOffsetResolved ||
        self_collapsing_child_needs_relayout) &&
       child_bfc_block_offset) {
+    ipid_depth_log.FPrint(
+        "子元素需要重新布局：状态为 kBfcBlockOffsetResolved "
+        "或需要重新布局自折叠子元素（{}），"
+        "且已知 BFC 块偏移 {}。",
+        ipid::btos(self_collapsing_child_needs_relayout),
+        *child_bfc_block_offset);
     // Assert that any clearance previously detected isn't lost.
     DCHECK(!child_data->is_pushed_by_floats ||
            layout_result->IsPushedByFloats());
@@ -2466,16 +3214,27 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
     // we need to carry over this state to the next layout pass, as clearance
     // won't automatically be detected then, since the BFC block-offset will
     // already be past the relevant floats.
+    ipid_depth_log.FPrint("将子元素被浮动推下的状态 {} 传递到下一次布局。",
+                          ipid::btos(layout_result->IsPushedByFloats()));
     child_data->is_pushed_by_floats = layout_result->IsPushedByFloats();
 
+    ipid_depth_log.FPrint("为子元素创建新的约束空间，使用 BFC 块偏移 {}。",
+                          *child_bfc_block_offset);
     ConstraintSpace new_child_space = CreateConstraintSpaceForChild(
         child, child_break_token, *child_data, ChildAvailableSize(),
         /* is_new_fc */ false, child_bfc_block_offset);
+    ipid_depth_log.FPrint("使用新的约束空间 {} 重新布局子元素。",
+                          ipid::GetConstraintSpaceString(new_child_space));
     layout_result =
         LayoutInflow(new_child_space, child_break_token, early_break_,
                      column_spanner_path_, &child, inline_child_layout_context);
+    ipid_depth_log.FPrint(
+        "重新布局完成，新的布局结果状态：{}",
+        ipid::GetLayoutResultStatusString(layout_result->Status()));
 
     if (layout_result->Status() == LayoutResult::kBfcBlockOffsetResolved) {
+      ipid_depth_log.FPrint(
+          "第二次布局仍返回 kBfcBlockOffsetResolved，允许第三次布局。");
       // Even a second layout pass may abort, if the BFC block offset initially
       // calculated turned out to be wrong. This happens when we discover that
       // an in-flow block-level descendant that establishes a new formatting
@@ -2483,24 +3242,32 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       // one more pass.
       child_bfc_block_offset = layout_result->BfcBlockOffset();
       DCHECK(child_bfc_block_offset);
+      ipid_depth_log.FPrint("更新子元素 BFC 块偏移为 {}。",
+                            *child_bfc_block_offset);
 
       // We don't expect clearance to be detected at this point. Any clearance
       // should already have been detected above.
       DCHECK(child_data->is_pushed_by_floats ||
              !layout_result->IsPushedByFloats());
 
+      ipid_depth_log.FPrint("为第三次布局创建新的约束空间。");
       new_child_space = CreateConstraintSpaceForChild(
           child, child_break_token, *child_data, ChildAvailableSize(),
           /* is_new_fc */ false, child_bfc_block_offset);
+      ipid_depth_log.FPrint("执行第三次布局。");
       layout_result = LayoutInflow(new_child_space, child_break_token,
                                    early_break_, column_spanner_path_, &child,
                                    inline_child_layout_context);
+      ipid_depth_log.FPrint(
+          "第三次布局完成，状态：{}",
+          ipid::GetLayoutResultStatusString(layout_result->Status()));
     }
 
     // If a kNeedsLineClampRelayout layout result was not handled in
     // HandleNonSuccessfulLayoutResult, it needs to be propagated upwards until
     // the BFC root.
     if (layout_result->Status() == LayoutResult::kNeedsLineClampRelayout) {
+      ipid_depth_log.FPrint("重新布局后仍需要行夹重新布局，向上传播状态。");
       DCHECK(line_clamp_data_.data.IsMeasureUntilBfcOffset());
       container_builder_.SetLinesUntilClamp(layout_result->LinesUntilClamp());
       container_builder_.SetLineClampAfterLayoutObject(
@@ -2508,6 +3275,7 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       return LayoutResult::kNeedsLineClampRelayout;
     }
 
+    ipid_depth_log.FPrint("重新布局成功完成。");
     DCHECK_EQ(layout_result->Status(), LayoutResult::kSuccess);
 
     // We stored this in a local variable, so it better not have changed.
@@ -2516,8 +3284,13 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
 
   const std::optional<LayoutUnit> line_box_bfc_block_offset =
       layout_result->LineBoxBfcBlockOffset();
+  ipid_depth_log.FPrint("行框 BFC 块偏移：{}",
+                        line_box_bfc_block_offset
+                            ? std::to_string(line_box_bfc_block_offset->ToInt())
+                            : "nullopt");
 
   if (GetConstraintSpace().HasBlockFragmentation()) {
+    ipid_depth_log.FPrint("当前空间有块分片，检查是否需要在子元素前断开。");
     // If the BFC block-offset is known both for this container and for the
     // child, breaking before may be possible, unless this is a resumed inline
     // formatting context in a parallel block flow. There are situations where
@@ -2530,11 +3303,15 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
         container_builder_.BfcBlockOffset() && child_bfc_block_offset &&
         (!child.IsInline() || !child_break_token ||
          !To<InlineBreakToken>(child_break_token)->IsInParallelBlockFlow());
+    ipid_depth_log.FPrint("是否考虑在子元素前断开：{}",
+                          ipid::btos(consider_breaking_before));
 
     if (consider_breaking_before) {
       bool is_line_box_pushed_by_floats =
           line_box_bfc_block_offset &&
           *line_box_bfc_block_offset > *child_bfc_block_offset;
+      ipid_depth_log.FPrint("行框是否被浮动推下：{}",
+                            ipid::btos(is_line_box_pushed_by_floats));
 
       // Floats only cause container separation for the outermost block child
       // that gets pushed down (the container and the child may have adjoining
@@ -2543,6 +3320,8 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
           has_break_opportunity_before_next_child_ ||
           (!container_builder_.IsPushedByFloats() &&
            (layout_result->IsPushedByFloats() || is_line_box_pushed_by_floats));
+      ipid_depth_log.FPrint("是否有容器分离：{}",
+                            ipid::btos(has_container_separation));
 
       // If this is a line with a block-in-inline, use the result for the
       // block-in-inline instead of that for the line. That's where we find the
@@ -2550,13 +3329,18 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       // block break token, if any.
       const LayoutResult& layout_result_to_use =
           container_builder_.LayoutResultForPropagation(*layout_result);
+      ipid_depth_log.FPrint("使用传播布局结果进行断开检查。");
 
+      LayoutUnit break_offset =
+          line_box_bfc_block_offset.value_or(*child_bfc_block_offset);
+      ipid_depth_log.FPrint("断开偏移：{}", break_offset);
       BreakStatus break_status = BreakBeforeChildIfNeeded(
           child, layout_result_to_use, previous_inflow_position,
           line_box_bfc_block_offset.value_or(*child_bfc_block_offset),
           has_container_separation);
 
       if (child_space.ShouldForceTextBoxTrimEnd()) {
+        ipid_depth_log.FPrint("强制文本框修剪结束，清除修剪标志。");
         // This is the line that we decided to come back to and trim, as an
         // attempt to fit it in the fragmentainer. This may or may not have
         // succeeded, but in any case, we can stop looking for a place to trim.
@@ -2564,21 +3348,25 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
       }
 
       if (break_status == BreakStatus::kBrokeBefore) {
+        ipid_depth_log.FPrint("已在子元素前断开。");
         // The line didn't fit, but if trimming is enabled, try again by
         // trimming the block-end side of the line box. It might fit
         // then. Otherwise we'll get here again and break before it.
         if (container_builder_.ShouldTextBoxTrimFragmentainerEnd() &&
             child.IsInline() && !child_space.ShouldForceTextBoxTrimEnd()) {
+          ipid_depth_log.FPrint("启用文本框修剪，设置最后非空内联子元素。");
           last_non_empty_inflow_child_ = To<InlineNode>(child);
           last_non_empty_break_token_ = child_break_token;
           return LayoutResult::kTextBoxTrimEndDidNotApply;
         } else {
+          ipid_depth_log.FPrint("清除文本框修剪标志。");
           container_builder_.ClearShouldTextBoxTrimEnd();
         }
         return LayoutResult::kSuccess;
       }
 
       if (break_status == BreakStatus::kNeedsEarlierBreak) {
+        ipid_depth_log.FPrint("需要更早的断开。");
         return LayoutResult::kNeedsEarlierBreak;
       }
     }
@@ -2594,6 +3382,7 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
 
   // It is now safe to update our version of the exclusion space, and any
   // propagated adjoining floats.
+  ipid_depth_log.FPrint("更新排除空间和相邻对象类型。");
   container_builder_.SetExclusionSpace(layout_result->GetExclusionSpace());
 
   // Only self-collapsing children should have adjoining objects.
@@ -2616,47 +3405,68 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
   // If we are a new formatting context, the child will get re-laid out once it
   // has been positioned.
   if (!container_builder_.BfcBlockOffset()) {
+    ipid_depth_log.FPrint(
+        "当前容器 BFC "
+        "块偏移未知，如果子元素有相邻对象类型，需要设置终止标志。");
     abort_when_bfc_block_offset_updated_ |=
         layout_result->GetAdjoiningObjectTypes();
     // If our BFC block offset is unknown, and the child got pushed down by
     // floats, so will we.
-    if (layout_result->IsPushedByFloats())
+    if (layout_result->IsPushedByFloats()) {
+      ipid_depth_log.FPrint("子元素被浮动推下，设置当前容器也为被浮动推下。");
       container_builder_.SetIsPushedByFloats();
+    }
   }
 
   const auto& physical_fragment = layout_result->GetPhysicalFragment();
   LogicalFragment fragment(GetConstraintSpace().GetWritingDirection(),
                            physical_fragment);
+  ipid_depth_log.FPrint("创建逻辑片段，类型：{}",
+                        physical_fragment.IsLineBox() ? "行框" : "块");
 
-  if (line_box_bfc_block_offset)
+  if (line_box_bfc_block_offset) {
+    ipid_depth_log.FPrint("使用行框 BFC 块偏移 {} 覆盖子元素 BFC 块偏移。",
+                          *line_box_bfc_block_offset);
     child_bfc_block_offset = line_box_bfc_block_offset;
+  }
 
   LogicalOffset logical_offset = CalculateLogicalOffset(
       fragment, layout_result->BfcLineOffset(), child_bfc_block_offset);
+  ipid_depth_log.FPrint("计算逻辑偏移：内联 {}，块 {}",
+                        logical_offset.inline_offset,
+                        logical_offset.block_offset);
   if (child.IsSliderThumb()) [[unlikely]] {
+    ipid_depth_log.FPrint("调整滑块拇指的内联偏移。");
     logical_offset = AdjustSliderThumbInlineOffset(fragment, logical_offset);
   }
 
   if (!PositionOrPropagateListMarker(*layout_result, &logical_offset,
-                                     previous_inflow_position))
+                                     previous_inflow_position)) {
+    ipid_depth_log.FPrint("列表标记定位失败，返回 kBfcBlockOffsetResolved。");
     return LayoutResult::kBfcBlockOffsetResolved;
+  }
 
   if (physical_fragment.IsLineBox()) {
+    ipid_depth_log.FPrint("从行框传播基线。");
     PropagateBaselineFromLineBox(physical_fragment,
                                  logical_offset.block_offset);
   } else {
+    ipid_depth_log.FPrint("从块子元素传播基线。");
     PropagateBaselineFromBlockChild(physical_fragment, child_data->margins,
                                     logical_offset.block_offset);
   }
 
   if (IsA<BlockNode>(child)) {
+    ipid_depth_log.FPrint("将块子元素结果添加到容器构建器。");
     container_builder_.AddResult(*layout_result, logical_offset,
                                  child_data->margins);
   } else {
+    ipid_depth_log.FPrint("将内联子元素结果添加到容器构建器。");
     container_builder_.AddResult(*layout_result, logical_offset);
   }
 
   if (!child_break_token || !child_break_token->IsInParallelFlow()) {
+    ipid_depth_log.FPrint("计算下一个内联位置。");
     *previous_inflow_position = ComputeInflowPosition(
         *previous_inflow_position, child, *child_data, child_bfc_block_offset,
         logical_offset, *layout_result, fragment,
@@ -2667,6 +3477,7 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
   if (child.IsInline()) {
     outgoing_inline_break_token =
         To<InlineBreakToken>(physical_fragment.GetBreakToken());
+    ipid_depth_log.FPrint("获取内联断开标记。");
   }
   *previous_inline_break_token = outgoing_inline_break_token;
 
@@ -2686,17 +3497,20 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
   }
 
   if (container_builder_.ShouldTextBoxTrim()) [[unlikely]] {
+    ipid_depth_log.FPrint("更新文本框修剪。");
     UpdateTextBoxTrim(child, child_break_token, outgoing_inline_break_token,
                       layout_result, previous_inflow_position);
   }
 
   if (GetConstraintSpace().HasBlockFragmentation() &&
       !has_break_opportunity_before_next_child_) {
+    ipid_depth_log.FPrint("检查下一个子元素前的断开机会。");
     has_break_opportunity_before_next_child_ =
         HasBreakOpportunityBeforeNextChild(physical_fragment,
                                            child_break_token);
   }
 
+  ipid_depth_log.FPrint("FinishInflow 完成，返回 kSuccess。");
   return LayoutResult::kSuccess;
 }
 
@@ -3304,63 +4118,124 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
     const std::optional<LayoutUnit> child_bfc_block_offset,
     bool has_clearance_past_adjoining_floats,
     LayoutUnit block_start_annotation_space) {
+  IpidDepthLog ipid_depth_log("BlockLayoutAlgorithm::CreateConstraintSpaceForChild");
+
   const ComputedStyle& child_style = child.Style();
   const auto child_writing_direction = child_style.GetWritingDirection();
   const auto& constraint_space = GetConstraintSpace();
+
+  ipid_depth_log.FPrint(
+      "为子元素 {} 创建约束空间。\n"
+      "子元素可用大小：{}（来自调用方传入）\n"
+      "是否为新的格式化上下文：{}（来自调用方传入）\n"
+      "父约束空间：{}\n"
+      "子元素数据：BFC偏移预估 {}，margin strut {}，margins {}（来自 ComputeChildData）",
+      ipid::GetNodeStr(child), ipid::GetLogicalSizeString(child_available_size),
+      ipid::btos(is_new_fc), ipid::GetConstraintSpaceString(constraint_space),
+      child_data.bfc_offset_estimate, ipid::GetMarginStrutString(child_data.margin_strut),
+      ipid::GetBoxStrutString(child_data.margins));
+
   ConstraintSpaceBuilder builder(constraint_space, child_writing_direction,
                                  is_new_fc);
+  ipid_depth_log.FPrint("创建了 ConstraintSpaceBuilder，准备配置子元素的约束空间参数。");
 
   const bool is_in_parallel_flow =
       IsParallelWritingMode(constraint_space.GetWritingMode(),
                             child_writing_direction.GetWritingMode());
+  ipid_depth_log.FPrint(
+      "检查子元素的 writing-mode 是否与父元素平行：{}\n"
+      "父元素 writing-mode：{}，子元素 writing-mode：{}",
+      ipid::btos(is_in_parallel_flow),
+      static_cast<int>(constraint_space.GetWritingMode()),
+      static_cast<int>(child_writing_direction.GetWritingMode()));
+  
   if (!is_in_parallel_flow) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "子元素的 writing-mode 与父元素正交，设置正交回退宽度。");
     SetOrthogonalFallbackInlineSize(Style(), child, &builder);
   }
 
   if (child.IsInline()) {
+    ipid_depth_log.FPrint("子元素是内联元素。");
     if (is_in_parallel_flow) {
+      ipid_depth_log.FPrint(
+          "内联元素且 writing-mode 平行，设置 auto 宽度行为为 kStretchImplicit（隐式拉伸）。");
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kStretchImplicit);
     }
   } else {
+    ipid_depth_log.FPrint("子元素是块级元素，分析其 justify-self 属性来决定 auto 宽度行为。");
+    
     const ItemPosition justify_self =
         child_style
             .ResolvedJustifySelf(
                 {ItemPosition::kNormal, OverflowAlignment::kDefault}, &Style())
             .GetPosition();
+    ipid_depth_log.FPrint(
+        "子元素的 justify-self 解析结果：{}（来自子元素的 ComputedStyle）。", static_cast<int>(justify_self));
 
     if (child.IsAnonymousBlockFlow()) {
+      ipid_depth_log.FPrint(
+          "子元素是匿名块流容器，设置 auto 宽度行为为 kStretchImplicit（隐式拉伸）。");
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kStretchImplicit);
     } else if (justify_self == ItemPosition::kStretch) {
+      ipid_depth_log.FPrint(
+          "justify-self 为 stretch，设置 auto 宽度行为为 kStretchExplicit（显式拉伸）。");
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kStretchExplicit);
     } else if (justify_self != ItemPosition::kNormal) {
+      ipid_depth_log.FPrint(
+          "justify-self 不是 normal（值为 {}），设置 auto 宽度行为为 kFitContent（适应内容）。",
+          static_cast<int>(justify_self));
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kFitContent);
     } else if (is_in_parallel_flow &&
                ShouldBlockContainerChildStretchAutoInlineSize(
                    To<BlockNode>(child))) {
+      ipid_depth_log.FPrint(
+          "writing-mode 平行且根据 CSS 规范子元素应拉伸，设置 auto 宽度行为为 kStretchImplicit（隐式拉伸）。");
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kStretchImplicit);
+    } else {
+      ipid_depth_log.FPrint("子元素使用默认的 auto 宽度行为。");
     }
   }
 
   if (line_clamp_data_.ShouldHideForPaint()) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "由于 line-clamp 限制（line_clamp_data_.ShouldHideForPaint() 为 true），子元素在绘制时将被隐藏。");
     builder.SetIsHiddenForPaint(true);
   }
 
+  ipid_depth_log.FPrint(
+      "设置子元素的可用大小：{}（来自调用方传入的 child_available_size）。",
+      ipid::GetLogicalSizeString(child_available_size));
   builder.SetAvailableSize(child_available_size);
-  builder.SetPercentageResolutionSize(PercentageSizeForChild(child));
+  
+  LogicalSize percentage_size = PercentageSizeForChild(child);
+  ipid_depth_log.FPrint(
+      "设置子元素的百分比解析大小：{}（通过 PercentageSizeForChild 计算得出）。",
+      ipid::GetLogicalSizeString(percentage_size));
+  builder.SetPercentageResolutionSize(percentage_size);
 
   // Pass the replaced %-size down to inline layout.
   if ((child.IsAnonymousBlockFlow() || child.IsInline()) &&
       replaced_child_percentage_size_ != child_percentage_size_) {
+    ipid_depth_log.FPrint(
+        "为匿名块流或内联元素传递替换元素的百分比大小：{}\n"
+        "（来自成员变量 replaced_child_percentage_size_，与 child_percentage_size_ {} 不同）。",
+        ipid::GetLogicalSizeString(replaced_child_percentage_size_),
+        ipid::GetLogicalSizeString(child_percentage_size_));
     builder.SetReplacedChildPercentageResolutionSize(
         replaced_child_percentage_size_);
   }
 
   if (constraint_space.IsTableCell()) {
+    ipid_depth_log.FPrint(
+        "当前容器是表格单元格（从父约束空间 constraint_space.IsTableCell() 得知），设置子元素为表格单元格的子元素。");
     builder.SetIsTableCellChild(true);
 
     // Always shrink-to-fit children within a <mtd> element.
     if (Node().GetDOMNode() &&
         IsA<MathMLTableCellElement>(Node().GetDOMNode())) {
+      ipid_depth_log.FPrint(
+          "容器是 MathML 表格单元格（从 DOM 节点类型检测），强制子元素使用 fit-content 宽度行为。");
       builder.SetInlineAutoBehavior(AutoSizeBehavior::kFitContent);
     }
 
@@ -3371,27 +4246,58 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
     // is considered to be "restricted". Otherwise, especially if this is the
     // only child of the cell, and that is the only cell in the row, we'd end
     // up with zero block size.
-    if (constraint_space.IsRestrictedBlockSizeTableCell() &&
-        child_percentage_size_.block_size == kIndefiniteSize &&
-        !child.ShouldBeConsideredAsReplaced() &&
-        child_style.LogicalHeight().HasPercent() &&
-        (child_style.OverflowBlockDirection() == EOverflow::kAuto ||
-         child_style.OverflowBlockDirection() == EOverflow::kScroll)) {
+    bool is_restricted_table_cell = constraint_space.IsRestrictedBlockSizeTableCell();
+    bool child_has_indefinite_percentage_block_size = (child_percentage_size_.block_size == kIndefiniteSize);
+    bool child_is_not_replaced = !child.ShouldBeConsideredAsReplaced();
+    bool child_has_percent_height = child_style.LogicalHeight().HasPercent();
+    bool child_has_scroll = (child_style.OverflowBlockDirection() == EOverflow::kAuto ||
+                            child_style.OverflowBlockDirection() == EOverflow::kScroll);
+    
+    ipid_depth_log.FPrint(
+        "检查是否应将子元素标记为受限高度表格单元格的子元素：\n"
+        "- 表格单元格高度受限：{}\n"
+        "- 子元素百分比块大小为不确定值：{}\n"
+        "- 子元素不是替换元素：{}\n"
+        "- 子元素有百分比高度：{}\n"
+        "- 子元素有滚动行为：{}",
+        ipid::btos(is_restricted_table_cell),
+        ipid::btos(child_has_indefinite_percentage_block_size),
+        ipid::btos(child_is_not_replaced),
+        ipid::btos(child_has_percent_height),
+        ipid::btos(child_has_scroll));
+    
+    if (is_restricted_table_cell && child_has_indefinite_percentage_block_size &&
+        child_is_not_replaced && child_has_percent_height && child_has_scroll) {
+      ipid_depth_log.FPrint(
+          "所有条件满足，设置为受限高度表格单元格的子元素（这会影响其高度计算方式）。");
       builder.SetIsRestrictedBlockSizeTableCellChild();
     }
   }
 
   bool has_bfc_block_offset = container_builder_.BfcBlockOffset().has_value();
+  ipid_depth_log.FPrint(
+      "当前容器是否已确定 BFC 块偏移：{}（来自 container_builder_.BfcBlockOffset()）",
+      ipid::btos(has_bfc_block_offset));
 
   // Propagate the |ConstraintSpace::ForcedBfcBlockOffset| down to our
   // children.
   if (!has_bfc_block_offset && constraint_space.ForcedBfcBlockOffset()) {
-    builder.SetForcedBfcBlockOffset(*constraint_space.ForcedBfcBlockOffset());
+    LayoutUnit forced_offset = *constraint_space.ForcedBfcBlockOffset();
+    ipid_depth_log.FPrint(
+        "容器未确定 BFC 偏移且父约束空间有强制 BFC 偏移 {}（来自父级传递），传递给子元素。",
+        forced_offset);
+    builder.SetForcedBfcBlockOffset(forced_offset);
   }
-  if (child_bfc_block_offset && !is_new_fc)
+  if (child_bfc_block_offset && !is_new_fc) {
+    ipid_depth_log.FPrint(
+        "子元素有指定 BFC 偏移 {} 且不是新格式化上下文（来自调用方传入的 child_bfc_block_offset），设置强制 BFC 偏移。",
+        *child_bfc_block_offset);
     builder.SetForcedBfcBlockOffset(*child_bfc_block_offset);
+  }
 
   if (has_bfc_block_offset) {
+    ipid_depth_log.FPrint(
+        "容器已确定 BFC 偏移，尝试为子元素设置乐观 BFC 偏移以提高布局缓存命中率。");
     // Typically we aren't allowed to look at the previous layout result within
     // a layout algorithm. However this is fine (honest), as it is just a hint
     // to the child algorithm for where floats should be placed. If it doesn't
@@ -3402,6 +4308,8 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
               child.GetLayoutBox()->GetCachedLayoutResult(
                   To<BlockBreakToken>(child_break_token))) {
         const auto& prev_space = cached_result->GetConstraintSpaceForCaching();
+        ipid_depth_log.FPrint(
+            "找到子元素的缓存布局结果，分析其 BFC 偏移变化来设置乐观偏移。");
 
         // To increase the hit-rate we adjust the previous "optimistic"/"forced"
         // BFC block-offset by how much the child has shifted from the previous
@@ -3409,73 +4317,143 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
         LayoutUnit bfc_block_delta =
             child_data.bfc_offset_estimate.block_offset -
             prev_space.GetBfcOffset().block_offset;
+        ipid_depth_log.FPrint(
+            "计算 BFC 偏移变化量：当前预估 {} - 上次实际 {} = {}（来自 child_data 和缓存的 prev_space）",
+            child_data.bfc_offset_estimate.block_offset,
+            prev_space.GetBfcOffset().block_offset, bfc_block_delta);
+        
         if (prev_space.ForcedBfcBlockOffset()) {
-          builder.SetOptimisticBfcBlockOffset(
-              *prev_space.ForcedBfcBlockOffset() + bfc_block_delta);
+          LayoutUnit optimistic_offset = *prev_space.ForcedBfcBlockOffset() + bfc_block_delta;
+          ipid_depth_log.FPrint(
+              "基于上次强制 BFC 偏移 {} + 变化量 {} = {}，设置乐观 BFC 偏移。",
+              *prev_space.ForcedBfcBlockOffset(), bfc_block_delta, optimistic_offset);
+          builder.SetOptimisticBfcBlockOffset(optimistic_offset);
         } else if (prev_space.OptimisticBfcBlockOffset()) {
-          builder.SetOptimisticBfcBlockOffset(
-              *prev_space.OptimisticBfcBlockOffset() + bfc_block_delta);
+          LayoutUnit optimistic_offset = *prev_space.OptimisticBfcBlockOffset() + bfc_block_delta;
+          ipid_depth_log.FPrint(
+              "基于上次乐观 BFC 偏移 {} + 变化量 {} = {}，设置乐观 BFC 偏移。",
+              *prev_space.OptimisticBfcBlockOffset(), bfc_block_delta, optimistic_offset);
+          builder.SetOptimisticBfcBlockOffset(optimistic_offset);
         }
+      } else {
+        ipid_depth_log.FPrint("未找到子元素的缓存布局结果，无法设置乐观 BFC 偏移。");
       }
     }
   } else if (constraint_space.OptimisticBfcBlockOffset()) {
     // Propagate the |ConstraintSpace::OptimisticBfcBlockOffset| down to our
     // children.
-    builder.SetOptimisticBfcBlockOffset(
-        *constraint_space.OptimisticBfcBlockOffset());
+    LayoutUnit optimistic_offset = *constraint_space.OptimisticBfcBlockOffset();
+    ipid_depth_log.FPrint(
+        "容器未确定 BFC 偏移但父约束空间有乐观 BFC 偏移 {}（来自父级），传递给子元素。",
+        optimistic_offset);
+    builder.SetOptimisticBfcBlockOffset(optimistic_offset);
   }
 
   // Propagate the |ConstraintSpace::AncestorHasClearancePastAdjoiningFloats|
   // flag down to our children.
   if (!has_bfc_block_offset &&
       constraint_space.AncestorHasClearancePastAdjoiningFloats()) {
+    ipid_depth_log.FPrint(
+        "容器未确定 BFC 偏移且祖先有跨越相邻浮动的 clearance（来自父约束空间），传递此标志给子元素。");
     builder.SetAncestorHasClearancePastAdjoiningFloats();
   }
-  if (has_clearance_past_adjoining_floats)
+  if (has_clearance_past_adjoining_floats) {
+    ipid_depth_log.FPrint(
+        "当前子元素有跨越相邻浮动的 clearance（来自调用方传入的 has_clearance_past_adjoining_floats），设置祖先 clearance 标志。");
     builder.SetAncestorHasClearancePastAdjoiningFloats();
+  }
 
   LayoutUnit clearance_offset = LayoutUnit::Min();
+  ipid_depth_log.FPrint("计算子元素的 clearance 偏移，初始值为最小值。");
+  
   if (!IsBreakInside(DynamicTo<BlockBreakToken>(child_break_token))) {
     if (!constraint_space.IsNewFormattingContext()) {
       clearance_offset = constraint_space.ClearanceOffset();
+      ipid_depth_log.FPrint(
+          "从父约束空间继承 clearance 偏移：{}（因为父容器不是新格式化上下文）", clearance_offset);
     }
     if (child.IsBlock()) {
+      EClear child_clear_value = child_style.Clear(Style());
       LayoutUnit child_clearance_offset =
-          GetExclusionSpace().ClearanceOffset(child_style.Clear(Style()));
+          GetExclusionSpace().ClearanceOffset(child_clear_value);
+      ipid_depth_log.FPrint(
+          "根据子元素的 clear 属性 {} 计算的 clearance 偏移：{}（来自排斥空间和子元素样式）",
+          ipid::GetComputedStyleEClearStr(child_clear_value), child_clearance_offset);
       clearance_offset = std::max(clearance_offset, child_clearance_offset);
+      ipid_depth_log.FPrint(
+          "最终的 clearance 偏移（取较大值）：{}", clearance_offset);
     }
+  } else {
+    ipid_depth_log.FPrint("子元素在分割内部，不设置 clearance 偏移。");
   }
+  
   builder.SetClearanceOffset(clearance_offset);
   builder.SetBaselineAlgorithmType(constraint_space.GetBaselineAlgorithmType());
+  ipid_depth_log.FPrint(
+      "设置基线算法类型：{}（来自父约束空间）",
+      static_cast<int>(constraint_space.GetBaselineAlgorithmType()));
 
   if (child_data.is_pushed_by_floats) {
     // Clearance has been applied, but it won't be automatically detected when
     // laying out the child, since the BFC block-offset has already been updated
     // to be past the relevant floats. We therefore need a flag.
+    ipid_depth_log.FPrint(
+        "子元素被浮动推移了位置（来自 child_data.is_pushed_by_floats），设置相应标志以便子元素布局时正确处理。");
     builder.SetIsPushedByFloats();
   }
 
   if (!is_new_fc) {
+    ipid_depth_log.FPrint(
+        "子元素不是新的格式化上下文，需要继承父容器的上下文信息。\n"
+        "设置 margin strut: {}（来自 child_data）\n"
+        "设置 BFC 偏移预估: {}（来自 child_data）\n"
+        "传递排斥空间（浮动信息）。",
+        ipid::GetMarginStrutString(child_data.margin_strut),
+        child_data.bfc_offset_estimate);
+    
     builder.SetMarginStrut(child_data.margin_strut);
     builder.SetBfcOffset(child_data.bfc_offset_estimate);
     builder.SetExclusionSpace(GetExclusionSpace());
+    
     if (!has_bfc_block_offset) {
+      ipid_depth_log.FPrint(
+          "容器未确定 BFC 偏移，传递相邻对象类型信息（来自 container_builder_）。");
       builder.SetAdjoiningObjectTypes(
           container_builder_.GetAdjoiningObjectTypes());
     }
+    
+    bool should_text_box_trim = line_clamp_data_.data.IsLineClampContext() &&
+        (constraint_space.ShouldTextBoxTrimInsideWhenLineClamp() ||
+         container_builder_.ShouldTextBoxTrimNodeEnd());
+    ipid_depth_log.FPrint(
+        "设置 line-clamp 相关数据和文本框裁剪设置。\n"
+        "- line-clamp 数据：来自 line_clamp_data_.data\n"
+        "- 结束 margin strut：{}（来自 line_clamp_data_）\n"
+        "- 结束 padding：{}（来自当前容器的 padding）\n"
+        "- 是否在 line-clamp 时进行内部文本框裁剪：{}",
+        ipid::GetMarginStrutString(line_clamp_data_.end_margin_strut),
+        Padding().block_end, ipid::btos(should_text_box_trim));
+    
     builder.SetLineClampData(line_clamp_data_.data);
     builder.SetLineClampEndMarginStrut(line_clamp_data_.end_margin_strut);
     builder.SetLineClampEndPadding(Padding().block_end);
-    builder.SetShouldTextBoxTrimInsideWhenLineClamp(
-        line_clamp_data_.data.IsLineClampContext() &&
-        (constraint_space.ShouldTextBoxTrimInsideWhenLineClamp() ||
-         container_builder_.ShouldTextBoxTrimNodeEnd()));
+    builder.SetShouldTextBoxTrimInsideWhenLineClamp(should_text_box_trim);
+  } else {
+    ipid_depth_log.FPrint(
+        "子元素是新的格式化上下文，不继承父容器的 margin strut 等上下文信息。");
+  }
+  if (block_start_annotation_space != LayoutUnit()) {
+    ipid_depth_log.FPrint(
+        "设置块开始注释空间：{}（来自调用方传入）", block_start_annotation_space);
   }
   builder.SetBlockStartAnnotationSpace(block_start_annotation_space);
 
   // Propagate `text-box-trim` only for in-flow children.
   if (container_builder_.ShouldTextBoxTrim() &&
       !child.IsFloatingOrOutOfFlowPositioned()) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "容器需要文本框裁剪（来自 container_builder_.ShouldTextBoxTrim()）且子元素是流内元素，配置文本框裁剪参数。");
+    
     // For inline children we cannot determine here whether this will be the
     // last line or not. However, `InlineLayoutAlgorithm` can determine if it's
     // the last line or not rather quickly in most cases. If it fails to apply
@@ -3483,20 +4461,31 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
     // handled by `RelayoutForTextBoxTrimEnd()`.
     bool known_to_have_successive_content =
         !child.IsInline() && !IsLastInflowChild(*child.GetLayoutBox());
+    
+    ipid_depth_log.FPrint(
+        "子元素是否确定有后续内容：{}（基于子元素类型和在父容器中的位置判断）",
+        ipid::btos(known_to_have_successive_content));
 
     SetTextBoxTrimOnChildSpaceBuilder(
         container_builder_, known_to_have_successive_content, &builder);
     if (container_builder_.ShouldTextBoxTrimEnd()) {
-      if (child.IsInline() && child == override_text_box_trim_end_child_ &&
+      bool should_force_trim_end = child.IsInline() && 
+          child == override_text_box_trim_end_child_ &&
           InlineBreakToken::IsStartEqual(
               To<InlineBreakToken>(override_text_box_trim_end_break_token_),
-              To<InlineBreakToken>(child_break_token))) {
+              To<InlineBreakToken>(child_break_token));
+      if (should_force_trim_end) {
+        ipid_depth_log.FPrint(
+            "内联子元素匹配文本框裁剪结束的覆盖设置（来自成员变量比较），强制启用结束裁剪。");
         builder.SetShouldForceTextBoxTrimEnd();
       }
     }
   }
 
   if (constraint_space.HasBlockFragmentation()) {
+    ipid_depth_log.FPrint(
+        "父约束空间有块分片（分页/分列），配置子元素的分片相关参数。");
+    
     LayoutUnit fragmentainer_offset_delta;
     // We need to keep track of our block-offset within the fragmentation
     // context, to be able to tell where the fragmentation line is (i.e. where
@@ -3504,10 +4493,19 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
     if (is_new_fc) {
       fragmentainer_offset_delta =
           *child_bfc_block_offset - constraint_space.ExpectedBfcBlockOffset();
+      ipid_depth_log.FPrint(
+          "子元素是新格式化上下文，计算分片器偏移差值：{} - {} = {}（来自参数和父约束空间）",
+          *child_bfc_block_offset, constraint_space.ExpectedBfcBlockOffset(),
+          fragmentainer_offset_delta);
     } else {
       fragmentainer_offset_delta = builder.ExpectedBfcBlockOffset() -
                                    constraint_space.ExpectedBfcBlockOffset();
+      ipid_depth_log.FPrint(
+          "子元素不是新格式化上下文，计算分片器偏移差值：{} - {} = {}（来自构建器和父约束空间）",
+          builder.ExpectedBfcBlockOffset(), constraint_space.ExpectedBfcBlockOffset(),
+          fragmentainer_offset_delta);
     }
+    
     SetupSpaceBuilderForFragmentation(container_builder_, child,
                                       fragmentainer_offset_delta, &builder);
 
@@ -3515,6 +4513,8 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
       // Need to keep track of whether we're in the same formatting context as a
       // column, in order to determine whether column-span:all applies on a
       // descendant.
+      ipid_depth_log.FPrint(
+          "子元素不是新格式化上下文且在列 BFC 中（来自父约束空间），设置相应标志以支持 column-span:all 检测。");
       builder.SetIsInColumnBfc();
     }
 
@@ -3523,8 +4523,12 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
     // fragmentainers, before we can insert any column spanners, so that
     // everything that is supposed to come before the spanner actually ends up
     // there.
-    if (constraint_space.IsPastBreak() ||
-        container_builder_.HasInsertedChildBreak()) {
+    bool is_past_break = constraint_space.IsPastBreak();
+    bool has_inserted_child_break = container_builder_.HasInsertedChildBreak();
+    if (is_past_break || has_inserted_child_break) {
+      ipid_depth_log.FPrint(
+          "存在跨分片的中断（父约束空间：{}）或容器已插入子元素中断（container_builder_：{}），设置跨分片标志。",
+          ipid::btos(is_past_break), ipid::btos(has_inserted_child_break));
       builder.SetIsPastBreak();
     }
   }
@@ -3537,17 +4541,35 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
           : child_style.Width().HasStretch() ||
                 child_style.MinWidth().HasStretch() ||
                 child_style.MaxWidth().HasStretch();
+  
+  ipid_depth_log.FPrint(
+      "检查子元素是否在块方向上有 stretch 尺寸：{}（基于 writing-mode {} 和子元素样式检测）",
+      ipid::btos(has_stretch), static_cast<int>(constraint_space.GetWritingMode()));
 
   if (has_stretch && !constraint_space.IsNewFormattingContext()) {
-    const LineLogicalBoxSides sides(BorderPadding().block_start == LayoutUnit(),
+    ipid_depth_log.FPrint(
+        "子元素有 stretch 尺寸且父容器不是新格式化上下文，配置 stretch 时忽略 margin 的设置。");
+    
+    bool ignore_block_start = BorderPadding().block_start == LayoutUnit();
+    bool ignore_block_end = BorderPadding().block_end == LayoutUnit();
+    ipid_depth_log.FPrint(
+        "根据容器的 border+padding 决定忽略 margin 的边：block_start={}, block_end={}（来自当前容器的 BorderPadding()）",
+        ipid::btos(ignore_block_start), ipid::btos(ignore_block_end));
+    
+    const LineLogicalBoxSides sides(ignore_block_start,
                                     /* line_right */ false,
-                                    BorderPadding().block_end == LayoutUnit(),
+                                    ignore_block_end,
                                     /* line_left */ false);
     builder.SetIgnoreMarginsForStretch(constraint_space.GetWritingMode(),
                                        sides);
   }
 
-  return builder.ToConstraintSpace();
+  ConstraintSpace result = builder.ToConstraintSpace();
+  ipid_depth_log.FPrint(
+      "完成子元素约束空间的构建。最终约束空间：{}",
+      ipid::GetConstraintSpaceString(result));
+  
+  return result;
 }
 
 void BlockLayoutAlgorithm::PropagateBaselineFromLineBox(

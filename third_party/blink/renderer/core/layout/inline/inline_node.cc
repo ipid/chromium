@@ -61,6 +61,11 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_offset_map.h"
 
+// ------ ipid logging START ------
+#include "third_party/blink/renderer/core/layout/ipid_debug_layout_str_utils.h"
+#include "third_party/blink/renderer/platform/ipid_logging/ipid_depth_logging.h"
+// ------ ipid logging END ------
+
 namespace blink {
 
 namespace {
@@ -1791,12 +1796,21 @@ const LayoutResult* InlineNode::Layout(
     const BreakToken* break_token,
     const ColumnSpannerPath* column_spanner_path,
     InlineChildLayoutContext* context) const {
+  IpidDepthLog ipid_depth_log("InlineNode::Layout");
+  ipid_depth_log.FPrint(
+      "接下来将调用 InlineLayoutAlgorithm 对节点 {} 完成 Layout 操作。",
+      ipid::GetNodeStr(*this));
+
   PrepareLayoutIfNeeded();
 
   const auto* inline_break_token = To<InlineBreakToken>(break_token);
   InlineLayoutAlgorithm algorithm(*this, constraint_space, inline_break_token,
                                   column_spanner_path, context);
-  return algorithm.Layout();
+  const LayoutResult* ret = algorithm.Layout();
+  ipid_depth_log.FPrint("节点 {} 的 Layout 操作完成，布局结果为：{}。",
+                        ipid::GetNodeStr(*this),
+                        ipid::GetLayoutResultString(ret));
+  return ret;
 }
 
 namespace {
@@ -1848,21 +1862,48 @@ static LayoutUnit ComputeContentSize(InlineNode node,
                                      LineBreaker::MaxSizeCache* max_size_cache,
                                      std::optional<LayoutUnit>* max_size_out,
                                      bool* depends_on_block_constraints_out) {
+  IpidDepthLog ipid_depth_log("inline_node.cc: ComputeContentSize");
+
   const ComputedStyle& style = node.Style();
+
+  ipid_depth_log.FPrint(
+      "正在计算内联节点 {} 的内容尺寸。\n模式：{}\n开辟的空间：{}",
+      ipid::GetNodeStr(node), ipid::GetLineBreakerModeString(mode),
+      ipid::GetConstraintSpaceString(space));
+
   LayoutUnit available_inline_size =
       mode == LineBreakerMode::kMaxContent ? LayoutUnit::Max() : LayoutUnit();
+
+  ipid_depth_log.FPrint(
+      "根据模式设置可用宽度：{}（数值：{}）",
+      (mode == LineBreakerMode::kMaxContent ? "(无限大)" : "0px"),
+      available_inline_size.ToString());
 
   ExclusionSpace empty_exclusion_space;
   LeadingFloats empty_leading_floats;
   LineLayoutOpportunity line_opportunity(available_inline_size);
   LayoutUnit result;
+  ipid_depth_log.FPrint(
+      "创建空的排除空间、空的前导浮动和行布局机会（可用宽度：{}）。",
+      available_inline_size.ToString());
+
+  ipid_depth_log.FPrint("创建 LineBreaker 来模拟分行过程，以计算内容尺寸。");
+
   LineBreaker line_breaker(
       node, mode, space, line_opportunity, empty_leading_floats,
       /* break_token */ nullptr,
       /* column_spanner_path */ nullptr, &empty_exclusion_space);
+  ipid_depth_log.FPrint("LineBreaker 创建完成，节点：{}，模式：{}，空间：{}。",
+                        ipid::GetNodeStr(node),
+                        ipid::GetLineBreakerModeString(mode),
+                        ipid::GetConstraintSpaceString(space));
   line_breaker.SetIntrinsicSizeOutputs(max_size_cache,
                                        depends_on_block_constraints_out);
+  ipid_depth_log.FPrint("设置 LineBreaker 的固有尺寸输出，最大尺寸缓存：{}。",
+                        max_size_cache ? "已提供" : "nullptr");
   const InlineItemsData& items_data = line_breaker.ItemsData();
+  ipid_depth_log.FPrint("获取内联项目数据，项目数量：{}。",
+                        static_cast<unsigned>(items_data.items.size()));
 
   // Computes max-size for floats in inline formatting context.
   class FloatsMaxSize {
@@ -1873,6 +1914,7 @@ static LayoutUnit ComputeContentSize(InlineNode node,
         : floats_inline_size_(float_input.float_left_inline_size +
                               float_input.float_right_inline_size) {
       DCHECK_GE(floats_inline_size_, 0);
+      // Note: We can't use outer ipid_depth_log here due to scope
     }
 
     void AddFloat(const ComputedStyle& float_style,
@@ -1952,10 +1994,16 @@ static LayoutUnit ComputeContentSize(InlineNode node,
     // may break text into multiple lines, and may remove trailing spaces. For
     // max size, use the original text widths from InlineItem instead.
     void AddTextUntil(wtf_size_t end_item_index) {
+      IpidDepthLog ipid_depth_log("MaxSizeFromMinSize::AddTextUntil");
+
       const base::span<const Member<InlineItem>> items =
           base::span{items_data.items}
               .first(end_item_index)
               .subspan(next_item_index);
+      unsigned items_to_process = static_cast<unsigned>(items.size());
+      ipid_depth_log.FPrint(
+          "AddTextUntil：需要处理 {} 个文本项目（从索引 {} 到 {}）",
+          items_to_process, next_item_index, end_item_index);
       next_item_index = end_item_index;
       for (const Member<InlineItem>& item_ptr : items) {
         const InlineItem& item = *item_ptr;
@@ -1975,18 +2023,32 @@ static LayoutUnit ComputeContentSize(InlineNode node,
     }
 
     void ForceLineBreak(const LineInfo& line_info) {
+      IpidDepthLog ipid_depth_log("MaxSizeFromMinSize::ForceLineBreak");
+
       // Add all text up to the end of the line. There may be spaces that were
       // removed during the line breaking.
       CHECK_LE(line_info.EndItemIndex(), items_data.items.size());
+      ipid_depth_log.FPrint("添加文本直到项目索引 {}（总项目数 {}）。",
+                            line_info.EndItemIndex(),
+                            static_cast<unsigned>(items_data.items.size()));
       AddTextUntil(line_info.EndItemIndex());
-      max_size = floats->ComputeMaxSizeForLine(position.ClampNegativeToZero(),
-                                               max_size);
+      LayoutUnit clamped_position = position.ClampNegativeToZero();
+      LayoutUnit old_max_size = max_size;
+      max_size = floats->ComputeMaxSizeForLine(clamped_position, max_size);
+      ipid_depth_log.FPrint("强制断行：位置 {}，最大尺寸 {} -> {}",
+                            clamped_position, old_max_size, max_size);
       position = LayoutUnit();
       is_after_break = true;
     }
 
     void AddTabulationCharacters(const InlineItem& item, unsigned length) {
+      IpidDepthLog ipid_depth_log(
+          "MaxSizeFromMinSize::AddTabulationCharacters");
+
       DCHECK_GE(length, 1u);
+      ipid_depth_log.FPrint(
+          "添加制表符字符，项目索引：{}，长度：{}，当前位置：{}", item.Index(),
+          length, position);
       AddTextUntil(item.Index());
       DCHECK(item.Style());
       const ComputedStyle& style = *item.Style();
@@ -2005,18 +2067,42 @@ static LayoutUnit ComputeContentSize(InlineNode node,
             font->TabWidth(font_data, tab_size));
         run_advance += glyph_advance.To<InlineLayoutUnit>() * (length - 1);
       }
-      position += run_advance.ToCeil<LayoutUnit>().ClampNegativeToZero();
+      LayoutUnit advance =
+          run_advance.ToCeil<LayoutUnit>().ClampNegativeToZero();
+      LayoutUnit old_position = position;
+      position += advance;
+      ipid_depth_log.FPrint("制表符推进：{} + {} = {}", old_position, advance,
+                            position);
     }
 
     LayoutUnit Finish() {
+      IpidDepthLog ipid_depth_log("MaxSizeFromMinSize::Finish");
+
+      ipid_depth_log.FPrint("完成最大尺寸计算，开始位置：{}，当前最大尺寸：{}",
+                            position, max_size);
+      ipid_depth_log.FPrint("添加剩余所有文本项目（总共 {} 个项目）。",
+                            static_cast<unsigned>(items_data.items.size()));
       AddTextUntil(items_data.items.size());
-      return floats->ComputeMaxSizeForLine(position.ClampNegativeToZero(),
-                                           max_size);
+      LayoutUnit clamped_position = position.ClampNegativeToZero();
+      LayoutUnit final_max_size =
+          floats->ComputeMaxSizeForLine(clamped_position, max_size);
+      ipid_depth_log.FPrint("最终计算结果：位置 {}，最大尺寸 {} -> {}",
+                            clamped_position, max_size, final_max_size);
+      return final_max_size;
     }
 
     void ComputeFromMinSize(const LineInfo& line_info) {
+      IpidDepthLog ipid_depth_log("MaxSizeFromMinSize::ComputeFromMinSize");
+
+      ipid_depth_log.FPrint(
+          "开始从最小尺寸计算最大尺寸，当前位置：{}，是否在断行后：{}",
+          position, ipid::btos(is_after_break));
+
       if (is_after_break) {
+        LayoutUnit old_position = position;
         position += line_info.TextIndent();
+        ipid_depth_log.FPrint("应用文本缩进：{} + {} = {}", old_position,
+                              line_info.TextIndent(), position);
         is_after_break = false;
       }
 
@@ -2026,17 +2112,32 @@ static LayoutUnit ComputeContentSize(InlineNode node,
       // when close tags appear after a forced break, they are included in
       // the line, and they may have inline sizes. crbug.com/991320.
       if (line_info.HasForcedBreak()) {
+        ipid_depth_log.FPrint("检测到强制断行，执行强制断行逻辑。");
         ForceLineBreak(line_info);
       }
+
+      ipid_depth_log.FPrint(
+          "ComputeFromMinSize 完成，当前位置：{}，最大尺寸：{}", position,
+          max_size);
     }
 
     void ComputeFromMinSizeInternal(const LineInfo& line_info) {
+      IpidDepthLog ipid_depth_log(
+          "MaxSizeFromMinSize::ComputeFromMinSizeInternal");
+
+      ipid_depth_log.FPrint("开始处理行信息中的 {} 个结果项目。",
+                            static_cast<unsigned>(line_info.Results().size()));
+
       for (const InlineItemResult& result : line_info.Results()) {
         const InlineItem& item = *result.item;
+        ipid_depth_log.FPrint("处理项目类型：{}，长度：{}",
+                              static_cast<int>(item.Type()), result.Length());
+
         if (item.Type() == InlineItem::kText) {
           // Text in InlineItemResult may be wrapped and trailing spaces
           // may be removed. Ignore them, but add text later from
           // InlineItem.
+          ipid_depth_log.FPrint("跳过文本项目，将在后续从 InlineItem 添加。");
           continue;
         }
 #if DCHECK_IS_ON()
@@ -2048,11 +2149,18 @@ static LayoutUnit ComputeContentSize(InlineNode node,
             item.Type() == InlineItem::kBlockInInline) {
           // The max-size for atomic inlines are cached in |max_size_cache|.
           unsigned item_index = item.Index();
-          position += max_size_cache[item_index];
+          LayoutUnit cached_size = max_size_cache[item_index];
+          LayoutUnit old_position = position;
+          position += cached_size;
+          ipid_depth_log.FPrint(
+              "原子内联/块内联项目，索引：{}，缓存尺寸：{}，位置：{} + {} = {}",
+              item_index, cached_size, old_position, cached_size, position);
           continue;
         }
         if (item.Type() == InlineItem::kControl) {
           UChar c = items_data.text_content[item.StartOffset()];
+          ipid_depth_log.FPrint("控制字符：{}，偏移：{}", static_cast<char>(c),
+                                item.StartOffset());
 #if DCHECK_IS_ON()
           if (c == uchar::kLineFeed) {
             DCHECK(line_info.HasForcedBreak());
@@ -2062,29 +2170,47 @@ static LayoutUnit ComputeContentSize(InlineNode node,
           // their widths for the max size may be different from the widths for
           // the min size. Fall back to 2 pass for now.
           if (c == uchar::kTab) {
+            ipid_depth_log.FPrint("检测到制表符，添加制表符字符。");
             AddTabulationCharacters(item, result.Length());
             continue;
           }
         }
         if (result.IsRubyColumn()) {
+          ipid_depth_log.FPrint("检测到 Ruby 列，递归处理基础行。");
           ComputeFromMinSizeInternal(result.ruby_column->base_line);
           continue;
         }
+        LayoutUnit old_position = position;
         position += result.inline_size;
+        ipid_depth_log.FPrint("添加内联尺寸：{} + {} = {}", old_position,
+                              result.inline_size, position);
       }
     }
   };
 
   if (node.IsInitialLetterBox()) [[unlikely]] {
+    ipid_depth_log.FPrint(
+        "[特殊逻辑] 当前节点为 initial-letter-box，使用特殊的尺寸计算逻辑。");
     LayoutUnit inline_size = LayoutUnit();
     LineInfo line_info;
+    unsigned line_count = 0;
     do {
       line_breaker.NextLine(&line_info);
-      if (line_info.Results().empty())
+      line_count++;
+      if (line_info.Results().empty()) {
+        ipid_depth_log.FPrint("第 {} 行为空，停止处理。", line_count);
         break;
-      inline_size =
-          std::max(CalculateInitialLetterBoxInlineSize(line_info), inline_size);
+      }
+      LayoutUnit line_size = CalculateInitialLetterBoxInlineSize(line_info);
+      LayoutUnit old_inline_size = inline_size;
+      inline_size = std::max(line_size, inline_size);
+      ipid_depth_log.FPrint("第 {} 行尺寸：{}，更新最大尺寸：{} -> {}",
+                            line_count, line_size, old_inline_size,
+                            inline_size);
     } while (!line_breaker.IsFinished());
+    ipid_depth_log.FPrint(
+        "initial-letter-box 的内容尺寸计算完成，共处理 {} 行，结果为：{}",
+        line_count, inline_size);
     return inline_size;
   }
 
@@ -2093,19 +2219,31 @@ static LayoutUnit ComputeContentSize(InlineNode node,
   MaxSizeFromMinSize max_size_from_min_size(items_data, *max_size_cache, node,
                                             &floats_max_size);
 
+  ipid_depth_log.FPrint("开始逐行处理内联内容，计算每行的宽度。");
+
   LineInfo line_info;
+  unsigned line_number = 0;
   do {
     line_breaker.NextLine(&line_info);
     if (line_info.Results().empty())
       break;
 
+    line_number++;
     LayoutUnit inline_size = line_info.Width();
+
+    ipid_depth_log.FPrint("处理第 {} 行，行宽度为 {}px", line_number,
+                          inline_size);
     for (const InlineItemResult& item_result : line_info.Results()) {
       DCHECK(item_result.item);
       const InlineItem& item = *item_result.item;
       if (item.Type() != InlineItem::kFloating) {
         continue;
       }
+
+      ipid_depth_log.FPrint(
+          "在第 {} 行中发现浮动元素，需要计算其对内容尺寸的影响。",
+          line_number);
+
       LayoutObject* floating_object = item.GetLayoutObject();
       DCHECK(floating_object && floating_object->IsFloating());
 
@@ -2119,28 +2257,55 @@ static LayoutUnit ComputeContentSize(InlineNode node,
               ? space.ReplacedChildPercentageResolutionBlockSize()
               : space.PercentageResolutionBlockSize());
       const auto float_space = builder.ToConstraintSpace();
+      ipid_depth_log.FPrint("为浮动元素 {} 创建约束空间：{}",
+                            ipid::GetNodeStr(float_node),
+                            ipid::GetConstraintSpaceString(float_space));
 
       const MinMaxSizesResult child_result =
           ComputeMinAndMaxContentContribution(style, float_node, float_space);
+      ipid_depth_log.FPrint("计算浮动元素的尺寸贡献：最小 {}，最大 {}",
+                            child_result.sizes.min_size,
+                            child_result.sizes.max_size);
+
       LayoutUnit child_inline_margins =
           ComputeMarginsFor(float_space, float_node.Style(), space).InlineSum();
+      ipid_depth_log.FPrint("计算浮动元素的内联边距总和：{}",
+                            child_inline_margins);
 
       if (depends_on_block_constraints_out) {
+        bool old_depends = *depends_on_block_constraints_out;
         *depends_on_block_constraints_out |=
             child_result.depends_on_block_constraints;
+        ipid_depth_log.FPrint(
+            "更新依赖块约束标志：{} | {} = {}", ipid::btos(old_depends),
+            ipid::btos(child_result.depends_on_block_constraints),
+            ipid::btos(*depends_on_block_constraints_out));
       }
 
       if (mode == LineBreakerMode::kMinContent) {
+        LayoutUnit old_result = result;
         result = std::max(result,
                           child_result.sizes.min_size + child_inline_margins);
+        if (result != old_result) {
+          ipid_depth_log.FPrint("浮动元素影响了最小内容尺寸：从 {} 更新为 {}",
+                                old_result, result);
+        }
       }
-      floats_max_size.AddFloat(
-          float_node.Style(), style,
-          child_result.sizes.max_size + child_inline_margins);
+      LayoutUnit float_max_size_with_margin =
+          child_result.sizes.max_size + child_inline_margins;
+      ipid_depth_log.FPrint("将浮动元素添加到最大尺寸计算器，最大尺寸+边距：{}",
+                            float_max_size_with_margin);
+      floats_max_size.AddFloat(float_node.Style(), style,
+                               float_max_size_with_margin);
     }
 
     if (mode == LineBreakerMode::kMinContent) {
+      LayoutUnit old_result = result;
       result = std::max(result, inline_size);
+      if (result != old_result) {
+        ipid_depth_log.FPrint("更新最小内容尺寸：从 {} 更新为 {}", old_result,
+                              result);
+      }
       can_compute_max_size_from_min_size =
           can_compute_max_size_from_min_size &&
           // `box-decoration-break: clone` clones box decorations to each
@@ -2151,20 +2316,36 @@ static LayoutUnit ComputeContentSize(InlineNode node,
       if (can_compute_max_size_from_min_size)
         max_size_from_min_size.ComputeFromMinSize(line_info);
     } else {
+      LayoutUnit old_result = result;
       result = floats_max_size.ComputeMaxSizeForLine(inline_size, result);
+      if (result != old_result) {
+        ipid_depth_log.FPrint(
+            "计算包含浮动的最大尺寸：行尺寸 {}，原结果 {} -> 新结果 {}",
+            inline_size, old_result, result);
+      }
     }
   } while (!line_breaker.IsFinished());
+
+  ipid_depth_log.FPrint("所有行处理完成，共处理了 {} 行。当前计算结果：{}",
+                        line_number, result);
 
   if (mode == LineBreakerMode::kMinContent &&
       can_compute_max_size_from_min_size) {
     if (node.IsSvgText()) {
+      ipid_depth_log.FPrint(
+          "[特殊逻辑] SVG 文本节点，直接使用当前结果作为最大内容尺寸。");
       *max_size_out = result;
       return result;
       // The following DCHECK_EQ() doesn't work well for SVG <text> because
       // it has glyph-split InlineItemResults. The sum of InlineItem
       // widths and the sum of InlineItemResult widths can be different.
     }
-    *max_size_out = max_size_from_min_size.Finish();
+
+    ipid_depth_log.FPrint("在计算最小内容尺寸过程中，同时计算出最大内容尺寸。");
+    LayoutUnit calculated_max_size = max_size_from_min_size.Finish();
+    *max_size_out = calculated_max_size;
+
+    ipid_depth_log.FPrint("最大内容尺寸计算结果：{}", calculated_max_size);
 
 #if EXPENSIVE_DCHECKS_ARE_ON()
     // Check the max size matches to the value computed from 2 pass.
@@ -2180,6 +2361,7 @@ static LayoutUnit ComputeContentSize(InlineNode node,
 #endif
   }
 
+  ipid_depth_log.FPrint("内容尺寸计算完成，最终结果：{}", result);
   return result;
 }
 
@@ -2187,6 +2369,10 @@ MinMaxSizesResult InlineNode::ComputeMinMaxSizes(
     WritingMode container_writing_mode,
     const ConstraintSpace& space,
     const MinMaxSizesFloatInput& float_input) const {
+  IpidDepthLog ipid_depth_log("InlineNode::ComputeMinMaxSizes");
+  ipid_depth_log.FPrint("正在计算节点 {} 的固有宽度。",
+                        ipid::GetNodeStr(*this));
+
   PrepareLayoutIfNeeded();
 
   // Compute the max of inline sizes of all line boxes with 0 available inline
@@ -2200,17 +2386,37 @@ MinMaxSizesResult InlineNode::ComputeMinMaxSizes(
       ComputeContentSize(*this, container_writing_mode, space, float_input,
                          LineBreakerMode::kMinContent, &max_size_cache,
                          &max_size, &depends_on_block_constraints);
+  ipid_depth_log.FPrint("得到固有最小宽度：{}。", sizes.min_size);
   if (max_size) {
+    ipid_depth_log.FPrint(
+        "计算固有最小宽度的过程中，得到了固有最大宽度为：{}。", *max_size);
     sizes.max_size = *max_size;
   } else {
+    ipid_depth_log.FPrint(
+        "计算固有最小宽度的过程中没有得到固有最大宽度，故继续调用 "
+        "ComputeContentSize 进行计算。");
     sizes.max_size = ComputeContentSize(
         *this, container_writing_mode, space, float_input,
         LineBreakerMode::kMaxContent, &max_size_cache, nullptr, nullptr);
+    ipid_depth_log.FPrint(
+        "调用 ComputeContentSize 计算固有最大宽度完成，结果为：{}。",
+        sizes.max_size);
+  }
+
+  // 旁路日志，仅打日志，无业务逻辑
+  if (sizes.min_size > sizes.max_size) {
+    ipid_depth_log.FPrint(
+        "固有最小宽度必须 <= "
+        "固有最大宽度，但目前的计算结果中，固有最小宽度 {} 大于固有最大宽度 "
+        "{}，故执行校正逻辑，将"
+        "固有最小宽度设置为固有最大宽度。",
+        sizes.min_size, sizes.max_size);
   }
 
   // Negative text-indent can make min > max. Ensure max encompasses the min.
   sizes.max_size = std::max(sizes.min_size, sizes.max_size);
 
+  ipid_depth_log.FPrint("计算固有宽度完成，结果为：{}。", sizes);
   return MinMaxSizesResult(sizes, depends_on_block_constraints);
 }
 
